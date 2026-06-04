@@ -3,6 +3,7 @@ import 'package:capit_n_bulls/searchpage.dart';
 import 'package:capit_n_bulls/providers/watchlist_provider.dart';
 import 'package:capit_n_bulls/providers/live_stocks_provider.dart';
 import 'package:capit_n_bulls/providers/live_indices_provider.dart';
+import 'package:capit_n_bulls/orders_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dart:convert';
@@ -220,13 +221,18 @@ class _WatchlistScreenState extends ConsumerState<WatchlistScreen> {
         token = entry.key.hashCode;
       }
 
+      // Register the contract name → numeric token mapping for orders screen
+      if (tokenFromFeed is int || tokenFromFeed is double) {
+        ContractTokenRegistry.registerContract(key, token);
+      }
+
       final symbol = _tokenMeta[token]?.symbol ?? entry.key;
       const exchange = 'NSE';
 
       _tokenMeta.putIfAbsent(token, () => (symbol: symbol, exchange: exchange));
 
       final prev = currentStockMap[token];
-      batch[token] = StockData.fromWsFeed(
+      final stockData = StockData.fromWsFeed(
         token: token,
         map: feedEntry,
         symbol: symbol,
@@ -237,6 +243,7 @@ class _WatchlistScreenState extends ConsumerState<WatchlistScreen> {
         prevWeek52Low: prev?.week52Low,
         companyName: prev?.companyName,
       );
+      batch[token] = stockData;
 
       didChange = true;
     }

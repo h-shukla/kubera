@@ -1535,65 +1535,101 @@ class _OrderDialogState extends ConsumerState<_OrderDialog> {
               const SizedBox(height: 12),
 
               // ── TOTAL VALUE ──
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Est. Total',
-                        style: TextStyle(
-                          color: colorScheme.onSurfaceVariant,
-                          fontSize: 13,
-                        ),
-                      ),
-                      if (hasLotSize)
-                        Text(
-                          '$_qty lot${_qty > 1 ? 's' : ''} × $_lotSize × ₹${_effectivePrice.toStringAsFixed(2)}',
-                          style: TextStyle(
-                            color: colorScheme.onSurfaceVariant.withValues(
-                              alpha: 0.6,
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerHighest.withValues(
+                    alpha: 0.5,
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: colorScheme.outline.withValues(alpha: 0.2),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Contract Value',
+                              style: TextStyle(
+                                color: colorScheme.onSurfaceVariant,
+                                fontSize: 12,
+                              ),
                             ),
-                            fontSize: 10,
+                            if (hasLotSize)
+                              Text(
+                                '$_qty lot${_qty > 1 ? 's' : ''} × $_lotSize × ₹${_effectivePrice.toStringAsFixed(2)}',
+                                style: TextStyle(
+                                  color: colorScheme.onSurfaceVariant
+                                      .withValues(alpha: 0.6),
+                                  fontSize: 10,
+                                ),
+                              ),
+                          ],
+                        ),
+                        Text(
+                          '₹${_total.toStringAsFixed(2)}',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w500,
                           ),
                         ),
-                    ],
-                  ),
-                  Text(
-                    '₹${_total.toStringAsFixed(2)}',
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      color: colorScheme.onSurface,
+                      ],
                     ),
-                  ),
-                ],
-              ),
-
-              if (widget.contractInfo != null &&
-                  widget.contractInfo!.marginNeeded > 0) ...[
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Margin req. (7×)',
-                      style: TextStyle(
-                        color: colorScheme.onSurfaceVariant,
-                        fontSize: 12,
-                      ),
+                    const SizedBox(height: 10),
+                    Divider(
+                      height: 1,
+                      color: colorScheme.outline.withValues(alpha: 0.2),
                     ),
-                    Text(
-                      '₹${(widget.contractInfo!.marginNeeded * _qty).toStringAsFixed(2)}',
-                      style: TextStyle(
-                        color: colorScheme.onSurface,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    const SizedBox(height: 10),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Margin Required',
+                              style: TextStyle(
+                                color: colorScheme.onSurface,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Text(
+                              '7× leverage applied',
+                              style: TextStyle(
+                                color: colorScheme.onSurfaceVariant.withValues(
+                                  alpha: 0.6,
+                                ),
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Text(
+                          () {
+                            if (widget.contractInfo != null &&
+                                widget.contractInfo!.marginNeeded > 0) {
+                              return '₹${(widget.contractInfo!.marginNeeded * _qty).toStringAsFixed(2)}';
+                            }
+                            // Fallback: derive from total ÷ 7 leverage
+                            return '₹${(_total / 7).toStringAsFixed(2)}';
+                          }(),
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
+              ),
 
               const SizedBox(height: 24),
 

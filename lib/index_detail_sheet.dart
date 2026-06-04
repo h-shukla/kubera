@@ -6,14 +6,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import './stock.dart';
 
-const _gainGreen = Color(0xFF3FD47E);
-const _lossRed = Color(0xFFE05252);
+// ── IndexDetailSheet ──────────────────────────────────────────────────────────
+// Mirrors StockDetailSheet: DraggableScrollableSheet, section labels,
+// stats grid, 52-week range bar, and a sticky Buy/Sell bar.
 
-class IndexDetailSheet extends ConsumerWidget {
-  /// The index name (e.g., 'NIFTY', 'BANKNIFTY') — used to look up live data
+class IndexDetailSheet extends ConsumerStatefulWidget {
+  /// The index name (e.g., 'NIFTY', 'BANKNIFTY') — used to look up live data.
   final String indexName;
 
-  /// Fallback snapshot used only if the index isn't in the provider yet
+  /// Fallback snapshot used only if the index isn't in the provider yet.
   final IndexData fallback;
 
   const IndexDetailSheet({
@@ -23,321 +24,460 @@ class IndexDetailSheet extends ConsumerWidget {
   });
 
   static void show(BuildContext context, IndexData indexData) {
-    showGeneralDialog(
+    showModalBottomSheet(
       context: context,
-      barrierDismissible: true,
-      barrierLabel: 'Dismiss',
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
       barrierColor: Colors.black54,
-      transitionDuration: const Duration(milliseconds: 350),
-      pageBuilder: (_, __, ___) =>
+      useSafeArea: true,
+      builder: (_) =>
           IndexDetailSheet(indexName: indexData.name, fallback: indexData),
-      transitionBuilder: (context, animation, secondaryAnimation, child) {
-        final curved = CurvedAnimation(
-          parent: animation,
-          curve: Curves.easeOutCubic,
-        );
-        return SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(0, 1),
-            end: Offset.zero,
-          ).animate(curved),
-          child: FadeTransition(opacity: curved, child: child),
-        );
-      },
     );
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<IndexDetailSheet> createState() => _IndexDetailSheetState();
+}
+
+class _IndexDetailSheetState extends ConsumerState<IndexDetailSheet>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _fadeAnim;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 400),
+    );
+    _fadeAnim = CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
+    _ctrl.forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Color get _gainColor => const Color(0xFF3FD47E);
+  Color get _lossColor => const Color(0xFFE05252);
+
+  @override
+  Widget build(BuildContext context) {
     // ── Live data: rebuilds on every WS tick for THIS index only ──────────
-    final data = ref.watch(liveIndicesProvider)[indexName] ?? fallback;
+    final data =
+        ref.watch(liveIndicesProvider)[widget.indexName] ?? widget.fallback;
 
     final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final semanticColor = data.isPositive ? _gainGreen : _lossRed;
-    final bottomPad = MediaQuery.of(context).padding.bottom;
+    final colorScheme = theme.colorScheme;
 
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: Material(
-        color: Colors.transparent,
-        child: Container(
-          width: double.infinity,
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surface,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-            border: isDark
-                ? Border(top: BorderSide(color: theme.dividerColor))
-                : null,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // ── Drag handle ──
-              Padding(
-                padding: const EdgeInsets.only(top: 12, bottom: 4),
-                child: Center(
+    final accentColor = data.isPositive ? _gainColor : _lossColor;
+
+    return FadeTransition(
+      opacity: _fadeAnim,
+      child: DraggableScrollableSheet(
+        initialChildSize: 0.62,
+        minChildSize: 0.4,
+        maxChildSize: 0.92,
+        builder: (context, scrollController) {
+          return Container(
+            decoration: BoxDecoration(
+              color: colorScheme.surface,
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(20),
+              ),
+            ),
+            child: Column(
+              children: [
+                // ── Drag handle ──
+                Padding(
+                  padding: const EdgeInsets.only(top: 12, bottom: 4),
                   child: Container(
                     width: 40,
                     height: 4,
                     decoration: BoxDecoration(
-                      color: isDark ? Colors.white24 : Colors.black12,
+                      color: colorScheme.onSurfaceVariant.withValues(
+                        alpha: 0.4,
+                      ),
                       borderRadius: BorderRadius.circular(2),
                     ),
                   ),
                 ),
-              ),
 
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 12, 24, 0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // ── Header: FIX — Expanded on name, fixed value column ──
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Name + badge — takes all available space, never overflows
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                // ── Scrollable content ──
+                Expanded(
+                  child: ListView(
+                    controller: scrollController,
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+                    children: [
+                      // ── Header ──
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  data.name,
+                                  style: theme.textTheme.headlineSmall
+                                      ?.copyWith(
+                                        color: colorScheme.onSurface,
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: 0.5,
+                                      ),
+                                ),
+                                const SizedBox(height: 4),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 3,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: colorScheme.surfaceContainerHighest,
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    'NSE INDEX',
+                                    style: theme.textTheme.labelSmall?.copyWith(
+                                      color: colorScheme.onSurfaceVariant,
+                                      fontWeight: FontWeight.w600,
+                                      letterSpacing: 1,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
                               Text(
-                                data.name,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.titleLarge?.copyWith(
-                                  fontSize: 22,
-                                  fontWeight: FontWeight.w800,
-                                  height: 1.2,
+                                data.value,
+                                style: theme.textTheme.headlineSmall?.copyWith(
+                                  color: colorScheme.onSurface,
+                                  fontWeight: FontWeight.w700,
                                 ),
                               ),
-                              const SizedBox(height: 6),
+                              const SizedBox(height: 4),
                               Container(
                                 padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 3,
+                                  horizontal: 10,
+                                  vertical: 4,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: isDark
-                                      ? theme
-                                            .colorScheme
-                                            .surfaceContainerHighest
-                                      : Colors.grey.shade100,
-                                  borderRadius: BorderRadius.circular(4),
+                                  color: accentColor.withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(6),
                                 ),
-                                child: Text(
-                                  'NSE Index',
-                                  style: TextStyle(
-                                    color: theme.hintColor,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    letterSpacing: 1,
-                                  ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      data.isPositive
+                                          ? Icons.arrow_upward_rounded
+                                          : Icons.arrow_downward_rounded,
+                                      color: accentColor,
+                                      size: 13,
+                                    ),
+                                    const SizedBox(width: 3),
+                                    Text(
+                                      data.change,
+                                      style: TextStyle(
+                                        color: accentColor,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
                             ],
                           ),
-                        ),
-
-                        const SizedBox(width: 16),
-
-                        // Value + change pill — fixed width, always right-aligned
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              data.value,
-                              style: theme.textTheme.titleLarge?.copyWith(
-                                fontSize: 22,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: semanticColor.withOpacity(0.15),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    data.isPositive
-                                        ? Icons.arrow_upward_rounded
-                                        : Icons.arrow_downward_rounded,
-                                    color: semanticColor,
-                                    size: 13,
-                                  ),
-                                  const SizedBox(width: 3),
-                                  Text(
-                                    data.change,
-                                    style: TextStyle(
-                                      color: semanticColor,
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 24),
-                    Divider(color: theme.dividerColor, height: 1),
-                    const SizedBox(height: 16),
-
-                    Text(
-                      'TODAY',
-                      style: TextStyle(
-                        color: theme.hintColor,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.5,
+                        ],
                       ),
-                    ),
-                    const SizedBox(height: 12),
 
-                    _StatsGrid(data: data),
+                      const SizedBox(height: 20),
+                      _divider(theme),
+                      const SizedBox(height: 20),
 
-                    const SizedBox(height: 20),
-                  ],
+                      // ── TODAY ──
+                      _sectionLabel('TODAY', theme),
+                      const SizedBox(height: 12),
+                      _twoColumnGrid([
+                        _StatItem(label: 'Open', value: data.open ?? '—'),
+                        _StatItem(
+                          label: 'Prev Close',
+                          value: data.prevClose ?? '—',
+                        ),
+                        _StatItem(
+                          label: 'High',
+                          value: data.high ?? '—',
+                          valueColor: _gainColor,
+                        ),
+                        _StatItem(
+                          label: 'Low',
+                          value: data.low ?? '—',
+                          valueColor: _lossColor,
+                        ),
+                      ], theme),
+
+                      _divider(theme),
+                      const SizedBox(height: 20),
+
+                      // ── MARGIN INFO ──
+                      _sectionLabel('MARGIN', theme),
+                      const SizedBox(height: 12),
+                      _marginRow(data, theme, colorScheme),
+
+                      const SizedBox(height: 20),
+                    ],
+                  ),
+                ),
+
+                // ── Sticky Buy/Sell Bar ──
+                _BuySellBar(
+                  indexName: widget.indexName,
+                  fallback: widget.fallback,
+                  gainColor: _gainColor,
+                  lossColor: _lossColor,
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  Widget _divider(ThemeData theme) =>
+      Divider(height: 1, color: theme.dividerColor);
+
+  Widget _sectionLabel(String label, ThemeData theme) => Text(
+    label,
+    style: theme.textTheme.labelSmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+      fontWeight: FontWeight.w700,
+      letterSpacing: 1.5,
+    ),
+  );
+
+  Widget _twoColumnGrid(List<_StatItem> items, ThemeData theme) {
+    final rows = <Widget>[];
+    for (var i = 0; i < items.length; i += 2) {
+      final left = items[i];
+      final right = i + 1 < items.length ? items[i + 1] : null;
+      rows.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 16),
+          child: Row(
+            children: [
+              Expanded(child: _statCell(left, theme)),
+              if (right != null) Expanded(child: _statCell(right, theme)),
+            ],
+          ),
+        ),
+      );
+    }
+    return Column(children: rows);
+  }
+
+  Widget _statCell(_StatItem item, ThemeData theme) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        item.label,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+          fontSize: 12,
+        ),
+      ),
+      const SizedBox(height: 4),
+      Text(
+        item.value,
+        style: theme.textTheme.bodyLarge?.copyWith(
+          color: item.valueColor ?? theme.colorScheme.onSurface,
+          fontSize: 16,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    ],
+  );
+
+  Widget _marginRow(IndexData data, ThemeData theme, ColorScheme colorScheme) {
+    final ltp = double.tryParse(data.value.replaceAll(',', ''));
+    // Index lot size is fixed at 50; margin = (ltp * 50) / 7
+    final marginPerLot = (ltp != null) ? (ltp * 50) / 7 : null;
+
+    String fmtCompact(double v) {
+      if (v >= 1e7) return '₹${(v / 1e7).toStringAsFixed(2)}Cr';
+      if (v >= 1e5) return '₹${(v / 1e5).toStringAsFixed(2)}L';
+      if (v >= 1e3) return '₹${(v / 1e3).toStringAsFixed(1)}K';
+      return '₹${v.toStringAsFixed(0)}';
+    }
+
+    return Row(
+      children: [
+        _infoPill(
+          icon: Icons.layers_outlined,
+          label: 'Lot Size',
+          value: '50',
+          theme: theme,
+          colorScheme: colorScheme,
+        ),
+        const SizedBox(width: 8),
+        _infoPill(
+          icon: Icons.account_balance_wallet_outlined,
+          label: 'Margin (7×)',
+          value: marginPerLot != null ? fmtCompact(marginPerLot) : '—',
+          theme: theme,
+          colorScheme: colorScheme,
+        ),
+        const SizedBox(width: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+          decoration: BoxDecoration(
+            color: _gainColor.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: _gainColor,
+                  shape: BoxShape.circle,
                 ),
               ),
-
-              // ── Buy/Sell Bar ──
-              Container(
-                padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + bottomPad),
-                decoration: BoxDecoration(
-                  color: isDark
-                      ? theme.colorScheme.surfaceContainerHighest
-                      : theme.colorScheme.surface,
-                  border: Border(top: BorderSide(color: theme.dividerColor)),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: _IndexOrderButton(
-                        label: 'BUY',
-                        color: _gainGreen,
-                        indexName: indexName,
-                        fallback: fallback,
-                        isBuy: true,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _IndexOrderButton(
-                        label: 'SELL',
-                        color: _lossRed,
-                        indexName: indexName,
-                        fallback: fallback,
-                        isBuy: false,
-                      ),
-                    ),
-                  ],
+              const SizedBox(width: 5),
+              Text(
+                'Live',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: _gainColor,
                 ),
               ),
             ],
           ),
         ),
+      ],
+    );
+  }
+
+  Widget _infoPill({
+    required IconData icon,
+    required String label,
+    required String value,
+    required ThemeData theme,
+    required ColorScheme colorScheme,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.7),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colorScheme.outline.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 13, color: colorScheme.onSurfaceVariant),
+          const SizedBox(width: 5),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 9,
+                  color: colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.5,
+                ),
+              ),
+              Text(
+                value,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: colorScheme.onSurface,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
 }
 
-// ── Stats Grid ────────────────────────────────────────────────────────────────
-class _StatsGrid extends StatelessWidget {
-  final IndexData data;
-  const _StatsGrid({required this.data});
+// ── Buy/Sell Bar ──────────────────────────────────────────────────────────────
+
+class _BuySellBar extends StatelessWidget {
+  final String indexName;
+  final IndexData fallback;
+  final Color gainColor;
+  final Color lossColor;
+
+  const _BuySellBar({
+    required this.indexName,
+    required this.fallback,
+    required this.gainColor,
+    required this.lossColor,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final stats = [
-      _StatItem(label: 'Open', value: data.open ?? '—'),
-      _StatItem(label: 'Prev Close', value: data.prevClose ?? '—'),
-      _StatItem(label: 'High', value: data.high ?? '—', valueColor: _gainGreen),
-      _StatItem(label: 'Low', value: data.low ?? '—', valueColor: _lossRed),
-      _StatItem(
-        label: '52W High',
-        value: data.week52High ?? '—',
-        valueColor: _gainGreen,
-      ),
-      _StatItem(
-        label: '52W Low',
-        value: data.week52Low ?? '—',
-        valueColor: _lossRed,
-      ),
-    ];
+    final theme = Theme.of(context);
+    final bottomPad = MediaQuery.of(context).padding.bottom;
 
-    return Column(
-      children: [
-        for (var i = 0; i < stats.length; i += 2)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 16),
-            child: Row(
-              children: [
-                Expanded(child: _statCell(context, stats[i])),
-                if (i + 1 < stats.length)
-                  Expanded(child: _statCell(context, stats[i + 1])),
-              ],
+    return Container(
+      padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + bottomPad),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        border: Border(top: BorderSide(color: theme.dividerColor)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _OrderButton(
+              label: 'BUY',
+              color: gainColor,
+              indexName: indexName,
+              fallback: fallback,
+              isBuy: true,
             ),
           ),
-      ],
-    );
-  }
-
-  Widget _statCell(BuildContext context, _StatItem item) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          item.label,
-          style: TextStyle(
-            color: theme.hintColor,
-            fontSize: 12,
-            fontWeight: FontWeight.w500,
+          const SizedBox(width: 12),
+          Expanded(
+            child: _OrderButton(
+              label: 'SELL',
+              color: lossColor,
+              indexName: indexName,
+              fallback: fallback,
+              isBuy: false,
+            ),
           ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          item.value,
-          style: TextStyle(
-            color: item.valueColor ?? theme.colorScheme.onSurface,
-            fontSize: 16,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
 
-class _StatItem {
-  final String label;
-  final String value;
-  final Color? valueColor;
-  const _StatItem({required this.label, required this.value, this.valueColor});
-}
-
-// ── Order Button ──────────────────────────────────────────────────────────────
-class _IndexOrderButton extends ConsumerWidget {
+class _OrderButton extends ConsumerWidget {
   final String label;
   final Color color;
   final String indexName;
   final IndexData fallback;
   final bool isBuy;
 
-  const _IndexOrderButton({
+  const _OrderButton({
     required this.label,
     required this.color,
     required this.indexName,
@@ -373,6 +513,7 @@ class _IndexOrderButton extends ConsumerWidget {
 }
 
 // ── Order Result ──────────────────────────────────────────────────────────────
+
 class _OrderResult {
   final bool success;
   final String message;
@@ -380,6 +521,7 @@ class _OrderResult {
 }
 
 // ── Order Dialog ──────────────────────────────────────────────────────────────
+
 class _IndexOrderDialog extends ConsumerStatefulWidget {
   final String indexName;
   final IndexData fallback;
@@ -416,10 +558,14 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
   int _qty = 1;
   bool _isLoading = false;
 
-  Color get _accentColor => widget.isBuy ? _gainGreen : _lossRed;
+  static const int _lotSize = 50;
+
+  int get _actualQty => _qty * _lotSize;
+
+  Color get _accentColor =>
+      widget.isBuy ? const Color(0xFF3FD47E) : const Color(0xFFE05252);
 
   Future<_OrderResult> _placeOrder() async {
-    // Watch live data here inside the async method
     final indexData =
         ref.read(liveIndicesProvider)[widget.indexName] ?? widget.fallback;
     final side = widget.isBuy ? 'BUY' : 'SELL';
@@ -430,8 +576,9 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
       "timestamp": DateTime.now().toIso8601String(),
       "contract_name": indexData.name,
       "exchange_token": indexData.name,
-      "qty": _qty * 50,
+      "qty": _actualQty,
       "lots": _qty,
+      "lot_size": _lotSize,
       "side": side,
       "order_type": "MIS",
       "product_type": "MARKET",
@@ -456,8 +603,6 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
             body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 10));
-
-      debugPrint(body.toString());
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         try {
@@ -514,9 +659,11 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
           success: result.success,
           message: result.success
               ? '${widget.isBuy ? 'Buy' : 'Sell'} order: $_qty lot${_qty > 1 ? 's' : ''} '
-                    '(${_qty * 50} qty) of ${widget.indexName} placed'
+                    '($_actualQty qty) of ${widget.indexName} placed'
               : result.message,
-          accentColor: result.success ? _gainGreen : _lossRed,
+          accentColor: result.success
+              ? const Color(0xFF3FD47E)
+              : const Color(0xFFE05252),
           onDone: () => entry.remove(),
         ),
       ),
@@ -528,187 +675,416 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
+    final colorScheme = theme.colorScheme;
 
-    // ── Live data: rebuilds on every WS tick for THIS index only ──────────
     final indexData =
         ref.watch(liveIndicesProvider)[widget.indexName] ?? widget.fallback;
 
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      backgroundColor: theme.dialogBackgroundColor,
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: _accentColor,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    widget.isBuy ? 'BUY' : 'SELL',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 12,
-                      letterSpacing: 1,
+      backgroundColor: colorScheme.surface,
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ── Header ──
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 4,
                     ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    indexData.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
+                    decoration: BoxDecoration(
+                      color: _accentColor,
+                      borderRadius: BorderRadius.circular(6),
                     ),
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 6),
-            Text(
-              '@ ${indexData.value}',
-              style: TextStyle(color: theme.hintColor, fontSize: 13),
-            ),
-
-            const SizedBox(height: 24),
-
-            Text(
-              'QUANTITY (LOTS)',
-              style: TextStyle(
-                color: theme.hintColor,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1.5,
-              ),
-            ),
-            const SizedBox(height: 10),
-
-            Row(
-              children: [
-                _QtyButton(
-                  icon: Icons.remove,
-                  onTap: () {
-                    if (_qty > 1) setState(() => _qty--);
-                  },
-                ),
-                Expanded(
-                  child: Center(
                     child: Text(
-                      '$_qty',
-                      style: theme.textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
+                      widget.isBuy ? 'BUY' : 'SELL',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 12,
+                        letterSpacing: 1,
                       ),
                     ),
                   ),
-                ),
-                _QtyButton(
-                  icon: Icons.add,
-                  onTap: () => setState(() => _qty++),
-                ),
-              ],
-            ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      indexData.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
 
-            const SizedBox(height: 20),
-            Divider(color: theme.dividerColor),
-            const SizedBox(height: 12),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Text(
+                    'LTP ${indexData.value}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      'Lot: $_lotSize',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
 
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Lots',
-                  style: TextStyle(color: theme.hintColor, fontSize: 13),
-                ),
-                Text(
-                  '$_qty × 50 units',
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
+              const SizedBox(height: 20),
+              Divider(color: theme.dividerColor),
+              const SizedBox(height: 16),
+
+              // ── QUANTITY ──
+              _dialogLabel('LOTS', theme),
+              const SizedBox(height: 4),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Text(
+                  'qty: $_actualQty',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
-              ],
-            ),
-
-            const SizedBox(height: 24),
-
-            Row(
-              children: [
-                Expanded(
-                  child: GestureDetector(
-                    onTap: () => Navigator.of(context).pop(),
-                    child: Container(
-                      height: 46,
-                      decoration: BoxDecoration(
-                        color: isDark
-                            ? theme.colorScheme.surfaceContainerHighest
-                            : Colors.grey.shade100,
-                        borderRadius: BorderRadius.circular(10),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  _QtyButton(
+                    icon: Icons.remove,
+                    onTap: () {
+                      if (_qty > 1) setState(() => _qty--);
+                    },
+                  ),
+                  Expanded(
+                    child: Center(
+                      child: Column(
+                        children: [
+                          Text(
+                            '$_qty',
+                            style: theme.textTheme.headlineSmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: colorScheme.onSurface,
+                            ),
+                          ),
+                          Text(
+                            'lot${_qty > 1 ? 's' : ''}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
                       ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        'Cancel',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          color: theme.colorScheme.onSurface,
+                    ),
+                  ),
+                  _QtyButton(
+                    icon: Icons.add,
+                    onTap: () => setState(() => _qty++),
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 20),
+              Divider(color: theme.dividerColor),
+              const SizedBox(height: 12),
+
+              // ── CONTRACT VALUE ──
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerHighest.withValues(
+                    alpha: 0.5,
+                  ),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: colorScheme.outline.withValues(alpha: 0.2),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    // ── Contract Value ──
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Contract Value',
+                              style: TextStyle(
+                                color: colorScheme.onSurfaceVariant,
+                                fontSize: 12,
+                              ),
+                            ),
+                            Text(
+                              '$_qty lot${_qty > 1 ? 's' : ''} × $_lotSize × ${indexData.value}',
+                              style: TextStyle(
+                                color: colorScheme.onSurfaceVariant.withValues(
+                                  alpha: 0.6,
+                                ),
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Text(
+                          () {
+                            final ltp = double.tryParse(
+                              indexData.value.replaceAll(',', ''),
+                            );
+                            if (ltp == null) return '—';
+                            final total = _actualQty * ltp;
+                            if (total >= 1e7)
+                              return '₹${(total / 1e7).toStringAsFixed(2)}Cr';
+                            if (total >= 1e5)
+                              return '₹${(total / 1e5).toStringAsFixed(2)}L';
+                            return '₹${total.toStringAsFixed(2)}';
+                          }(),
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 10),
+                    Divider(
+                      height: 1,
+                      color: colorScheme.outline.withValues(alpha: 0.2),
+                    ),
+                    const SizedBox(height: 10),
+
+                    // ── Margin Required ──
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Margin Required',
+                              style: TextStyle(
+                                color: colorScheme.onSurface,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Text(
+                              '7× leverage applied',
+                              style: TextStyle(
+                                color: colorScheme.onSurfaceVariant.withValues(
+                                  alpha: 0.6,
+                                ),
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Text(
+                          () {
+                            final ltp = double.tryParse(
+                              indexData.value.replaceAll(',', ''),
+                            );
+                            if (ltp == null) return '—';
+                            final margin = (_actualQty * ltp) / 7;
+                            if (margin >= 1e7)
+                              return '₹${(margin / 1e7).toStringAsFixed(2)}Cr';
+                            if (margin >= 1e5)
+                              return '₹${(margin / 1e5).toStringAsFixed(2)}L';
+                            if (margin >= 1e3)
+                              return '₹${(margin / 1e3).toStringAsFixed(1)}K';
+                            return '₹${margin.toStringAsFixed(2)}';
+                          }(),
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 24),
+
+              // ── ACTION BUTTONS ──
+              Row(
+                children: [
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: _isLoading
+                          ? null
+                          : () => Navigator.of(context).pop(),
+                      child: Container(
+                        height: 46,
+                        decoration: BoxDecoration(
+                          color: colorScheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          'Cancel',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            color: colorScheme.onSurface,
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: GestureDetector(
-                    onTap: _isLoading ? null : _handleConfirm,
-                    child: Container(
-                      height: 46,
-                      decoration: BoxDecoration(
-                        color: _accentColor.withOpacity(_isLoading ? 0.6 : 1.0),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      alignment: Alignment.center,
-                      child: _isLoading
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  Colors.white,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: _isLoading ? null : _handleConfirm,
+                      child: Container(
+                        height: 46,
+                        decoration: BoxDecoration(
+                          color: _isLoading
+                              ? _accentColor.withValues(alpha: 0.6)
+                              : _accentColor,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        alignment: Alignment.center,
+                        child: _isLoading
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : Text(
+                                'Confirm ${widget.isBuy ? 'Buy' : 'Sell'}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
                                 ),
                               ),
-                            )
-                          : Text(
-                              'Confirm ${widget.isBuy ? 'Buy' : 'Sell'}',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _dialogLabel(String label, ThemeData theme) => Text(
+    label,
+    style: theme.textTheme.labelSmall?.copyWith(
+      color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+      fontWeight: FontWeight.w700,
+      letterSpacing: 1.5,
+    ),
+  );
+}
+
+// ── Toggle Chip ───────────────────────────────────────────────────────────────
+// (retained for future use, e.g. product type selection)
+
+class _ToggleChip extends StatelessWidget {
+  final String label;
+  final String subtitle;
+  final bool selected;
+  final Color selectedColor;
+  final VoidCallback onTap;
+  final ThemeData theme;
+
+  const _ToggleChip({
+    required this.label,
+    required this.subtitle,
+    required this.selected,
+    required this.selectedColor,
+    required this.onTap,
+    required this.theme,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = theme.colorScheme;
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+          decoration: BoxDecoration(
+            color: selected
+                ? selectedColor.withValues(alpha: 0.12)
+                : colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: selected
+                  ? selectedColor
+                  : colorScheme.outline.withValues(alpha: 0.3),
+              width: selected ? 1.5 : 1,
             ),
-          ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  color: selected ? selectedColor : colorScheme.onSurface,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                subtitle,
+                style: TextStyle(
+                  color: selected
+                      ? selectedColor.withValues(alpha: 0.7)
+                      : colorScheme.onSurfaceVariant,
+                  fontSize: 11,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
+
+// ── Qty Button ────────────────────────────────────────────────────────────────
 
 class _QtyButton extends StatelessWidget {
   final IconData icon;
@@ -718,27 +1094,33 @@ class _QtyButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-
+    final colorScheme = Theme.of(context).colorScheme;
     return GestureDetector(
       onTap: onTap,
       child: Container(
         width: 40,
         height: 40,
         decoration: BoxDecoration(
-          color: isDark
-              ? theme.colorScheme.surfaceContainerHighest
-              : Colors.grey.shade100,
+          color: colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(8),
         ),
-        child: Icon(icon, size: 20, color: theme.colorScheme.onSurface),
+        child: Icon(icon, size: 20, color: colorScheme.onSurface),
       ),
     );
   }
 }
 
+// ── Stat Item ─────────────────────────────────────────────────────────────────
+
+class _StatItem {
+  final String label;
+  final String value;
+  final Color? valueColor;
+  const _StatItem({required this.label, required this.value, this.valueColor});
+}
+
 // ── Snackbar Toast ────────────────────────────────────────────────────────────
+
 class _SnackbarToast extends StatefulWidget {
   final bool success;
   final String message;
@@ -795,11 +1177,11 @@ class _SnackbarToastState extends State<_SnackbarToast>
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
             color: widget.accentColor,
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(12),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.3),
-                blurRadius: 8,
+                color: Colors.black.withValues(alpha: 0.25),
+                blurRadius: 12,
                 offset: const Offset(0, 4),
               ),
             ],
@@ -807,18 +1189,20 @@ class _SnackbarToastState extends State<_SnackbarToast>
           child: Row(
             children: [
               Icon(
-                widget.success ? Icons.check_circle : Icons.error,
+                widget.success
+                    ? Icons.check_circle_outline
+                    : Icons.error_outline,
                 color: Colors.white,
-                size: 20,
+                size: 18,
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   widget.message,
                   style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 13,
                   ),
                 ),
               ),
