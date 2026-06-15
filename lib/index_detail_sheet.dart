@@ -7,14 +7,9 @@ import 'package:http/http.dart' as http;
 import './stock.dart';
 
 // ── IndexDetailSheet ──────────────────────────────────────────────────────────
-// Mirrors StockDetailSheet: DraggableScrollableSheet, section labels,
-// stats grid, 52-week range bar, and a sticky Buy/Sell bar.
 
 class IndexDetailSheet extends ConsumerStatefulWidget {
-  /// The index name (e.g., 'NIFTY', 'BANKNIFTY') — used to look up live data.
   final String indexName;
-
-  /// Fallback snapshot used only if the index isn't in the provider yet.
   final IndexData fallback;
 
   const IndexDetailSheet({
@@ -66,13 +61,11 @@ class _IndexDetailSheetState extends ConsumerState<IndexDetailSheet>
 
   @override
   Widget build(BuildContext context) {
-    // ── Live data: rebuilds on every WS tick for THIS index only ──────────
     final data =
         ref.watch(liveIndicesProvider)[widget.indexName] ?? widget.fallback;
 
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-
     final accentColor = data.isPositive ? _gainColor : _lossColor;
 
     return FadeTransition(
@@ -309,8 +302,8 @@ class _IndexDetailSheetState extends ConsumerState<IndexDetailSheet>
 
   Widget _marginRow(IndexData data, ThemeData theme, ColorScheme colorScheme) {
     final ltp = double.tryParse(data.value.replaceAll(',', ''));
-    // Index lot size is fixed at 50; margin = (ltp * 50) / 7
-    final marginPerLot = (ltp != null) ? (ltp * 50) / 7 : null;
+    final lotSize = _lotSizeForIndex(data.name);
+    final marginPerLot = (ltp != null) ? (ltp * lotSize) / 7 : null;
 
     String fmtCompact(double v) {
       if (v >= 1e7) return '₹${(v / 1e7).toStringAsFixed(2)}Cr';
@@ -324,7 +317,7 @@ class _IndexDetailSheetState extends ConsumerState<IndexDetailSheet>
         _infoPill(
           icon: Icons.layers_outlined,
           label: 'Lot Size',
-          value: '50',
+          value: '$lotSize',
           theme: theme,
           colorScheme: colorScheme,
         ),
@@ -415,6 +408,14 @@ class _IndexDetailSheetState extends ConsumerState<IndexDetailSheet>
       ),
     );
   }
+}
+
+// ── Lot size lookup ───────────────────────────────────────────────────────────
+// Add more entries here as needed.
+int _lotSizeForIndex(String name) {
+  final upper = name.toUpperCase();
+  if (upper.contains('BANKNIFTY')) return 30;
+  return 65; // NIFTY and everything else
 }
 
 // ── Buy/Sell Bar ──────────────────────────────────────────────────────────────
@@ -557,17 +558,43 @@ class _IndexOrderDialog extends ConsumerStatefulWidget {
 class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
   int _qty = 1;
   bool _isLoading = false;
+  bool _isLimitOrder = false;
+  late final TextEditingController _limitPriceCtrl;
 
-  static const int _lotSize = 50;
-
+  int get _lotSize => _lotSizeForIndex(widget.indexName);
   int get _actualQty => _qty * _lotSize;
 
   Color get _accentColor =>
       widget.isBuy ? const Color(0xFF3FD47E) : const Color(0xFFE05252);
 
+  IndexData get _currentData =>
+      ref.read(liveIndicesProvider)[widget.indexName] ?? widget.fallback;
+
+  double get _effectiveLtp {
+    final raw = _currentData.value.replaceAll(',', '');
+    return double.tryParse(raw) ?? 0.0;
+  }
+
+  double get _effectivePrice => _isLimitOrder && _limitPriceCtrl.text.isNotEmpty
+      ? double.tryParse(_limitPriceCtrl.text) ?? _effectiveLtp
+      : _effectiveLtp;
+
+  @override
+  void initState() {
+    super.initState();
+    _limitPriceCtrl = TextEditingController(
+      text: _effectiveLtp.toStringAsFixed(2),
+    );
+  }
+
+  @override
+  void dispose() {
+    _limitPriceCtrl.dispose();
+    super.dispose();
+  }
+
   Future<_OrderResult> _placeOrder() async {
-    final indexData =
-        ref.read(liveIndicesProvider)[widget.indexName] ?? widget.fallback;
+    final indexData = _currentData;
     final side = widget.isBuy ? 'BUY' : 'SELL';
     final userId = ref.read(authProvider.notifier).userId ?? 'unknown';
 
@@ -581,12 +608,12 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
       "lot_size": _lotSize,
       "side": side,
       "order_type": "MIS",
-      "product_type": "MARKET",
-      "entry_price":
-          double.tryParse(indexData.value.replaceAll(',', '')) ?? 0.0,
-      "ltp": double.tryParse(indexData.value.replaceAll(',', '')) ?? 0.0,
+      "product_type": _isLimitOrder ? "LIMIT" : "MARKET",
+      if (_isLimitOrder) "limit_price": _effectivePrice,
+      "entry_price": _effectivePrice,
+      "ltp": _effectiveLtp,
       "pnl": 0.0,
-      "status": "OPEN",
+      "status": _isLimitOrder ? "PENDING" : "OPEN",
     };
 
     try {
@@ -763,20 +790,21 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
               const SizedBox(height: 16),
 
               // ── QUANTITY ──
-              _dialogLabel('LOTS', theme),
-              const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerRight,
-                child: Text(
-                  'qty: $_actualQty',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: colorScheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w500,
+              Row(
+                children: [
+                  _dialogLabel('LOTS', theme),
+                  const Spacer(),
+                  Text(
+                    'qty: $_actualQty',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
-                ),
+                ],
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 10),
               Row(
                 children: [
                   _QtyButton(
@@ -815,6 +843,81 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
               ),
 
               const SizedBox(height: 20),
+
+              // ── PRICE TYPE ──
+              _dialogLabel('PRICE TYPE', theme),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  _ToggleChip(
+                    label: 'Market',
+                    subtitle: 'At LTP',
+                    selected: !_isLimitOrder,
+                    selectedColor: _accentColor,
+                    onTap: () => setState(() => _isLimitOrder = false),
+                    theme: theme,
+                  ),
+                  const SizedBox(width: 10),
+                  _ToggleChip(
+                    label: 'Limit',
+                    subtitle: 'Custom',
+                    selected: _isLimitOrder,
+                    selectedColor: _accentColor,
+                    onTap: () => setState(() => _isLimitOrder = true),
+                    theme: theme,
+                  ),
+                ],
+              ),
+
+              if (_isLimitOrder) ...[
+                const SizedBox(height: 16),
+                _dialogLabel('LIMIT PRICE', theme),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _limitPriceCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: colorScheme.onSurface,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    prefixText: '₹ ',
+                    prefixStyle: TextStyle(
+                      color: colorScheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    filled: true,
+                    fillColor: colorScheme.surfaceContainerHighest.withValues(
+                      alpha: 0.5,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide(
+                        color: colorScheme.outline.withValues(alpha: 0.3),
+                      ),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide(
+                        color: colorScheme.outline.withValues(alpha: 0.3),
+                      ),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide(color: _accentColor, width: 1.5),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 12,
+                    ),
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: 20),
               Divider(color: theme.dividerColor),
               const SizedBox(height: 12),
 
@@ -847,7 +950,7 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
                               ),
                             ),
                             Text(
-                              '$_qty lot${_qty > 1 ? 's' : ''} × $_lotSize × ${indexData.value}',
+                              '$_qty lot${_qty > 1 ? 's' : ''} × $_lotSize × ${_effectivePrice.toStringAsFixed(2)}',
                               style: TextStyle(
                                 color: colorScheme.onSurfaceVariant.withValues(
                                   alpha: 0.6,
@@ -859,11 +962,7 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
                         ),
                         Text(
                           () {
-                            final ltp = double.tryParse(
-                              indexData.value.replaceAll(',', ''),
-                            );
-                            if (ltp == null) return '—';
-                            final total = _actualQty * ltp;
+                            final total = _actualQty * _effectivePrice;
                             if (total >= 1e7)
                               return '₹${(total / 1e7).toStringAsFixed(2)}Cr';
                             if (total >= 1e5)
@@ -913,11 +1012,7 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
                         ),
                         Text(
                           () {
-                            final ltp = double.tryParse(
-                              indexData.value.replaceAll(',', ''),
-                            );
-                            if (ltp == null) return '—';
-                            final margin = (_actualQty * ltp) / 7;
+                            final margin = (_actualQty * _effectivePrice) / 7;
                             if (margin >= 1e7)
                               return '₹${(margin / 1e7).toStringAsFixed(2)}Cr';
                             if (margin >= 1e5)
@@ -1015,7 +1110,6 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
 }
 
 // ── Toggle Chip ───────────────────────────────────────────────────────────────
-// (retained for future use, e.g. product type selection)
 
 class _ToggleChip extends StatelessWidget {
   final String label;

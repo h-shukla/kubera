@@ -51,6 +51,13 @@ class Order {
   final double totalValue;
   final OrderStatus status;
   final double currentPrice;
+  final double limitPrice;
+  final double exitLimitPrice;
+  final int exitLimitQty;
+  // Tradebook enrichment
+  final double? realisedPnl;
+  final double? exitPrice;
+  final String leg;
 
   const Order({
     required this.orderId,
@@ -65,6 +72,12 @@ class Order {
     required this.totalValue,
     required this.status,
     required this.currentPrice,
+    required this.limitPrice,
+    this.exitLimitPrice = 0.0,
+    this.exitLimitQty = 0,
+    this.realisedPnl,
+    this.exitPrice,
+    this.leg = '',
   });
 
   Order copyWithLtp(double ltp) => Order(
@@ -80,7 +93,36 @@ class Order {
     totalValue: totalValue,
     status: status,
     currentPrice: ltp,
+    limitPrice: limitPrice,
+    exitLimitPrice: exitLimitPrice,
+    exitLimitQty: exitLimitQty,
+    realisedPnl: realisedPnl,
+    exitPrice: exitPrice,
+    leg: leg,
   );
+
+  Order copyWithTradebook({double? realisedPnl, double? exitPrice}) => Order(
+    orderId: orderId,
+    time: time,
+    symbol: symbol,
+    contractName: contractName,
+    exchangeToken: exchangeToken,
+    instrumentToken: instrumentToken,
+    action: action,
+    quantity: quantity,
+    price: price,
+    totalValue: totalValue,
+    status: status,
+    currentPrice: currentPrice,
+    limitPrice: limitPrice,
+    exitLimitPrice: exitLimitPrice,
+    exitLimitQty: exitLimitQty,
+    realisedPnl: realisedPnl ?? this.realisedPnl,
+    exitPrice: exitPrice ?? this.exitPrice,
+    leg: leg,
+  );
+
+  bool get hasLimitExit => exitLimitPrice > 0;
 
   String get bestToken {
     if (contractName.isNotEmpty && contractName != 'UNKNOWN') {
@@ -132,6 +174,11 @@ class Order {
 
     final entryPrice = (json['entry_price'] as num?)?.toDouble() ?? 0.0;
     final qty = (json['qty'] as num?)?.toInt() ?? 1;
+    final limitPrice = (json['limit_price'] as num?)?.toDouble() ?? 0.0;
+
+    final exitLimitPrice =
+        (json['exit_limit_price'] as num?)?.toDouble() ?? 0.0;
+    final exitLimitQty = (json['exit_limit_qty'] as num?)?.toInt() ?? 0;
 
     return Order(
       orderId: json['order_id'] as String? ?? '',
@@ -146,6 +193,75 @@ class Order {
       totalValue: entryPrice * qty,
       status: status,
       currentPrice: entryPrice,
+      limitPrice: limitPrice,
+      exitLimitPrice: exitLimitPrice,
+      exitLimitQty: exitLimitQty,
+    );
+  }
+
+  /// Build an Order directly from a tradebook entry (closed/cancelled trades).
+  factory Order.fromTradebook(Map<String, dynamic> json) {
+    final rawDate =
+        json['timestamp']?.toString() ??
+        json['closed_at']?.toString() ??
+        json['updated_at']?.toString() ??
+        json['trade_date_time']?.toString() ??
+        '';
+    final dt = DateTime.tryParse(rawDate)?.toLocal() ?? DateTime.now();
+    final time = '${dt.hour}.${dt.minute.toString().padLeft(2, '0')}';
+
+    final contractName =
+        json['contract_name']?.toString() ??
+        json['tradingsymbol']?.toString() ??
+        'UNKNOWN';
+    final symbol = _parseSymbol(contractName);
+
+    final side =
+        json['side']?.toString() ?? json['action']?.toString() ?? 'BUY';
+    final action = side[0].toUpperCase() + side.substring(1).toLowerCase();
+
+    final qty =
+        (json['qty'] as num?)?.toInt() ??
+        int.tryParse(json['quantity']?.toString() ?? '') ??
+        1;
+
+    final price = (json['price'] as num?)?.toDouble() ?? 0.0;
+
+    final realisedPnl = json['realised_pnl'] != null
+        ? double.tryParse(json['realised_pnl'].toString())
+        : null;
+
+    final leg = json['leg']?.toString() ?? '';
+
+    // Tradebook entries are always closed trades
+    final rawStatus = (json['status'] as String? ?? 'CLOSED').toUpperCase();
+    final status = switch (rawStatus) {
+      'CANCELLED' || 'CANCELED' => OrderStatus.cancelled,
+      _ => OrderStatus.closed,
+    };
+
+    final instrumentTokenInt = (json['instrument_token'] as num?)?.toInt() ?? 0;
+    final raw = json['exchange_token'];
+    final exchangeToken = instrumentTokenInt > 0
+        ? instrumentTokenInt.toString()
+        : (raw is num ? raw.toString() : 'UNKNOWN');
+
+    return Order(
+      orderId: json['order_id']?.toString() ?? '',
+      time: time,
+      symbol: symbol,
+      contractName: contractName,
+      exchangeToken: exchangeToken,
+      instrumentToken: instrumentTokenInt.toString(),
+      action: action,
+      quantity: qty,
+      price: price,
+      totalValue: price * qty,
+      status: status,
+      currentPrice: price,
+      limitPrice: 0.0,
+      realisedPnl: realisedPnl,
+      leg: leg,
     );
   }
 
@@ -156,8 +272,75 @@ class Order {
   }
 }
 
+// ─── Tradebook Entry Model ────────────────────────────────────────────────────
+
+class TradeBookEntry {
+  final String orderId;
+  final DateTime tradeDateTime;
+  final String contractName;
+  final String action;
+  final int quantity;
+  final double tradePrice;
+  final String exchange;
+  final double? pnl;
+  final String leg;
+
+  const TradeBookEntry({
+    required this.orderId,
+    required this.tradeDateTime,
+    required this.contractName,
+    required this.action,
+    required this.quantity,
+    required this.tradePrice,
+    required this.exchange,
+    required this.leg,
+    this.pnl,
+  });
+
+  factory TradeBookEntry.fromJson(Map<String, dynamic> json) {
+    final rawDate =
+        json['timestamp']?.toString() ??
+        json['closed_at']?.toString() ??
+        json['updated_at']?.toString() ??
+        json['trade_date_time']?.toString() ??
+        '';
+    final dt = DateTime.tryParse(rawDate)?.toLocal() ?? DateTime.now();
+
+    final symbol =
+        json['contract_name']?.toString() ??
+        json['tradingsymbol']?.toString() ??
+        '-';
+    final side =
+        json['side']?.toString() ??
+        json['action']?.toString() ??
+        json['transaction_type']?.toString() ??
+        'BUY';
+    final qty =
+        (json['qty'] as num?)?.toInt() ??
+        int.tryParse(json['quantity']?.toString() ?? '') ??
+        0;
+    final price = (json['price'] as num?)?.toDouble() ?? 0.0;
+    final exchange = json['exchange']?.toString() ?? '';
+    final leg = json['leg']?.toString() ?? '';
+    final pnl = json['realised_pnl'] != null
+        ? double.tryParse(json['realised_pnl'].toString())
+        : null;
+
+    return TradeBookEntry(
+      orderId: json['order_id']?.toString() ?? '',
+      tradeDateTime: dt,
+      contractName: symbol,
+      action: side.toUpperCase(),
+      quantity: qty,
+      tradePrice: price,
+      exchange: exchange,
+      leg: leg,
+      pnl: pnl,
+    );
+  }
+}
+
 // ─── Limit Order Model ────────────────────────────────────────────────────────
-// Sourced from GET /positions/:userId → pending_limit_orders[]
 
 class LimitOrder {
   final String orderId;
@@ -165,7 +348,7 @@ class LimitOrder {
   final String symbol;
   final String contractName;
   final String exchangeToken;
-  final String action; // 'Buy' | 'Sell'
+  final String action;
   final int quantity;
   final double limitPrice;
 
@@ -257,6 +440,20 @@ class PositionsResponse {
   });
 }
 
+// ─── Combined screen data ─────────────────────────────────────────────────────
+
+class OrdersScreenData {
+  final List<Order> orders;
+  final List<LimitOrder> limitOrders;
+  final List<TradeBookEntry> tradeBookEntries;
+
+  const OrdersScreenData({
+    required this.orders,
+    required this.limitOrders,
+    required this.tradeBookEntries,
+  });
+}
+
 // ─── Repository ───────────────────────────────────────────────────────────────
 
 class OrdersRepository {
@@ -264,6 +461,7 @@ class OrdersRepository {
 
   Future<List<Order>> fetchOrders(String userId) async {
     final uri = Uri.parse('$_baseUrl/orders/$userId');
+    debugPrint('📡 USER ID is $userId');
     final response = await http
         .get(uri, headers: {'Content-Type': 'application/json'})
         .timeout(const Duration(seconds: 15));
@@ -278,7 +476,6 @@ class OrdersRepository {
         .toList();
   }
 
-  /// Fetches active positions AND pending limit orders from /positions/:userId.
   Future<PositionsResponse> fetchPositions(String userId) async {
     final uri = Uri.parse('$_baseUrl/positions/$userId');
     final response = await http
@@ -306,6 +503,115 @@ class OrdersRepository {
     );
   }
 
+  Future<List<TradeBookEntry>> fetchTradebook(String userId) async {
+    final uri = Uri.parse('$_baseUrl/tradebook/$userId');
+    final response = await http
+        .get(uri, headers: {'Content-Type': 'application/json'})
+        .timeout(const Duration(seconds: 15));
+
+    debugPrint('📡 Tradebook [$userId] → ${response.statusCode}');
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to load tradebook (HTTP ${response.statusCode})');
+    }
+
+    final decoded = jsonDecode(response.body);
+
+    List<dynamic> raw = [];
+    if (decoded is Map && decoded['trades'] is List) {
+      raw = decoded['trades'] as List<dynamic>;
+    } else if (decoded is List) {
+      raw = decoded;
+    } else if (decoded is Map && decoded['data'] is List) {
+      raw = decoded['data'] as List<dynamic>;
+    }
+
+    return raw
+        .map((e) => TradeBookEntry.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Fetches orders + positions + tradebook in parallel and merges the results.
+  /// Strategy:
+  ///   • Live data (OPEN / PENDING) comes from /orders and /positions as before.
+  ///   • CLOSED / CANCELLED orders are enriched with tradebook P&L where
+  ///     order_id matches an EXIT leg in the tradebook.
+  ///   • Tradebook EXIT entries whose order_id is NOT already in /orders are
+  ///     surfaced as synthetic closed Orders so nothing is missed.
+  Future<OrdersScreenData> fetchAll(String userId) async {
+    final results = await Future.wait([
+      fetchOrders(userId),
+      fetchPositions(userId),
+      fetchTradebook(userId),
+    ]);
+
+    final orders = results[0] as List<Order>;
+    final positionsResp = results[1] as PositionsResponse;
+    final tbEntries = results[2] as List<TradeBookEntry>;
+
+    // Build a lookup: orderId → tradebook EXIT entry (for P&L enrichment)
+    final tbExitByOrderId = <String, TradeBookEntry>{};
+    for (final tb in tbEntries) {
+      if (tb.leg == 'EXIT' && tb.orderId.isNotEmpty) {
+        tbExitByOrderId[tb.orderId] = tb;
+      }
+    }
+
+    // Enrich existing closed/cancelled orders with P&L from tradebook
+    final knownOrderIds = <String>{};
+    final enriched = orders.map((o) {
+      knownOrderIds.add(o.orderId);
+      if (o.status == OrderStatus.closed || o.status == OrderStatus.cancelled) {
+        final tb = tbExitByOrderId[o.orderId];
+        if (tb != null) {
+          return o.copyWithTradebook(
+            realisedPnl: tb.pnl,
+            exitPrice: tb.tradePrice,
+          );
+        }
+      }
+      return o;
+    }).toList();
+
+    // Synthetic closed orders: EXIT legs in tradebook not already in /orders
+    final syntheticClosed = <Order>[];
+    for (final tb in tbEntries) {
+      if (tb.leg == 'EXIT' &&
+          tb.orderId.isNotEmpty &&
+          !knownOrderIds.contains(tb.orderId)) {
+        syntheticClosed.add(
+          Order(
+            orderId: tb.orderId,
+            time:
+                '${tb.tradeDateTime.hour}.${tb.tradeDateTime.minute.toString().padLeft(2, '0')}',
+            symbol: Order._parseSymbol(tb.contractName),
+            contractName: tb.contractName,
+            exchangeToken: 'UNKNOWN',
+            instrumentToken: '0',
+            action:
+                tb.action[0].toUpperCase() +
+                tb.action.substring(1).toLowerCase(),
+            quantity: tb.quantity,
+            price: tb.tradePrice,
+            totalValue: tb.tradePrice * tb.quantity,
+            status: OrderStatus.closed,
+            currentPrice: tb.tradePrice,
+            limitPrice: 0.0,
+            realisedPnl: tb.pnl,
+            exitPrice: tb.tradePrice,
+            leg: tb.leg,
+          ),
+        );
+      }
+    }
+
+    return OrdersScreenData(
+      orders: [...enriched, ...syntheticClosed],
+      limitOrders: positionsResp.pendingLimitOrders,
+      tradeBookEntries: tbEntries,
+    );
+  }
+
   Future<ContractInfo> fetchContractInfo(String identifier) async {
     final uri = Uri.parse('$_baseUrl/contract/$identifier');
     final response = await http
@@ -326,6 +632,21 @@ class OrdersRepository {
     return ContractInfo.fromJson(json);
   }
 
+  Future<Map<String, dynamic>> fetchOrderDetail(String orderId) async {
+    final uri = Uri.parse('$_baseUrl/orders/detail/$orderId');
+    final response = await http
+        .get(uri, headers: {'Content-Type': 'application/json'})
+        .timeout(const Duration(seconds: 8));
+
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Failed to load order details (HTTP ${response.statusCode})',
+      );
+    }
+
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
   Future<void> closeOrder(String orderId, {required int qty}) async {
     final uri = Uri.parse('$_baseUrl/orders/$orderId/close');
     final response = await http
@@ -336,15 +657,43 @@ class OrdersRepository {
         )
         .timeout(const Duration(seconds: 15));
 
-    debugPrint(
-      'Close order response: ${response.statusCode} - ${response.body}',
-    );
     if (response.statusCode != 200 && response.statusCode != 204) {
-      throw Exception('Failed to close order (HTTP ${response.statusCode})');
+      String detail = 'Failed to close order (HTTP ${response.statusCode})';
+      try {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['detail'] != null) detail = body['detail'].toString();
+      } catch (_) {}
+      throw Exception(detail);
     }
   }
 
-  /// Modify the limit price of a pending limit order.
+  Future<void> setExitLimitPrice(
+    String orderId, {
+    required double exitLimitPrice,
+    int? exitLimitQty,
+  }) async {
+    final uri = Uri.parse('$_baseUrl/orders/$orderId/modify');
+    final body = <String, dynamic>{'exit_limit_price': exitLimitPrice};
+    if (exitLimitQty != null) body['exit_limit_qty'] = exitLimitQty;
+
+    final response = await http
+        .patch(
+          uri,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 15));
+
+    if (response.statusCode != 200 && response.statusCode != 204) {
+      String detail = 'Failed to set limit exit (HTTP ${response.statusCode})';
+      try {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['detail'] != null) detail = body['detail'].toString();
+      } catch (_) {}
+      throw Exception(detail);
+    }
+  }
+
   Future<void> modifyOrder(String orderId, {required double limitPrice}) async {
     final uri = Uri.parse('$_baseUrl/orders/$orderId/modify');
     final response = await http
@@ -355,24 +704,17 @@ class OrdersRepository {
         )
         .timeout(const Duration(seconds: 15));
 
-    debugPrint(
-      'Modify order [$orderId] → limit_price=$limitPrice: ${response.statusCode} - ${response.body}',
-    );
     if (response.statusCode != 200 && response.statusCode != 204) {
       throw Exception('Failed to modify order (HTTP ${response.statusCode})');
     }
   }
 
-  /// Cancel a pending limit order.
   Future<void> cancelOrder(String orderId) async {
     final uri = Uri.parse('$_baseUrl/orders/$orderId/cancel');
     final response = await http
         .patch(uri, headers: {'Content-Type': 'application/json'})
         .timeout(const Duration(seconds: 15));
 
-    debugPrint(
-      'Cancel order [$orderId]: ${response.statusCode} - ${response.body}',
-    );
     if (response.statusCode != 200 && response.statusCode != 204) {
       throw Exception('Failed to cancel order (HTTP ${response.statusCode})');
     }
@@ -493,7 +835,7 @@ void _showLimitOrderDetail(
   );
 }
 
-// ─── _OrderDetailSheet (unchanged — for OPEN orders) ─────────────────────────
+// ─── _OrderDetailSheet ────────────────────────────────────────────────────────
 
 class _OrderDetailSheet extends StatefulWidget {
   final Order order;
@@ -510,6 +852,7 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
   final _repo = OrdersRepository();
   bool _isClosing = false;
   bool _isCancelling = false;
+  bool _isSettingLimitExit = false;
   late double _currentPrice;
   late int _exitLots;
   ContractInfo? _contractInfo;
@@ -517,11 +860,19 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
   String? _contractError;
   StreamSubscription<Map<String, double>>? _ltpSub;
 
+  late double _exitLimitPrice;
+  late int _exitLimitQty;
+
+  TextEditingController? _limitExitPriceController;
+  TextEditingController? _modifyPriceController;
+
   @override
   void initState() {
     super.initState();
     _currentPrice = widget.order.currentPrice;
     _exitLots = 1;
+    _exitLimitPrice = widget.order.exitLimitPrice;
+    _exitLimitQty = widget.order.exitLimitQty;
 
     _ltpSub = widget.ltpStream?.listen((ltpMap) {
       final order = widget.order;
@@ -534,7 +885,13 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
       }
     });
 
-    _loadContractInfo();
+    // Only load contract info for actionable (open/pending) orders
+    if (widget.order.status == OrderStatus.open ||
+        widget.order.status == OrderStatus.pending) {
+      _loadContractInfo();
+    } else {
+      setState(() => _contractLoading = false);
+    }
   }
 
   String get _contractFetchToken {
@@ -574,6 +931,8 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
   @override
   void dispose() {
     _ltpSub?.cancel();
+    _limitExitPriceController?.dispose();
+    _modifyPriceController?.dispose();
     super.dispose();
   }
 
@@ -864,16 +1223,480 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
       },
     );
 
-    if (confirmed == true) {
-      await _exitPosition(dialogLots);
+    if (confirmed == true) await _exitPosition(dialogLots);
+  }
+
+  Future<void> _showLimitExitDialog() async {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final order = widget.order;
+    final isBuy = order.action == 'Buy';
+    final lotSize = _contractInfo?.lotSize ?? 1;
+    final maxLots = (order.quantity / lotSize).floor().clamp(1, 99999);
+
+    final suggestedPrice = _exitLimitPrice > 0
+        ? _exitLimitPrice
+        : _currentPrice > 0
+        ? _currentPrice
+        : order.price;
+
+    _limitExitPriceController = TextEditingController(
+      text: suggestedPrice > 0 ? suggestedPrice.toStringAsFixed(2) : '',
+    );
+    final priceController = _limitExitPriceController!;
+
+    int dialogLots = _exitLimitQty > 0
+        ? (_exitLimitQty / lotSize).round().clamp(1, maxLots)
+        : maxLots;
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          return Dialog(
+            backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: SingleChildScrollView(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(dialogContext).viewInsets.bottom,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            _exitLimitPrice > 0
+                                ? 'Update limit exit'
+                                : 'Set limit exit',
+                            style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700,
+                              color: isDark ? Colors.white : Colors.black,
+                            ),
+                          ),
+                        ),
+                        if (_exitLimitPrice > 0)
+                          GestureDetector(
+                            onTap: () => Navigator.pop(dialogContext, {
+                              'action': 'clear',
+                            }),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: isDark
+                                    ? Colors.white10
+                                    : Colors.grey.shade100,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                'Clear',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: isDark
+                                      ? Colors.grey.shade400
+                                      : Colors.grey.shade600,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${order.symbol}  ·  ${order.action}  ·  ${order.quantity} qty',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: isDark
+                            ? Colors.grey.shade400
+                            : Colors.grey.shade600,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Text(
+                      'Target price',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: isDark
+                            ? Colors.grey.shade400
+                            : Colors.grey.shade600,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: priceController,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      autofocus: true,
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w600,
+                        color: isDark ? Colors.white : Colors.black,
+                      ),
+                      decoration: InputDecoration(
+                        prefixText: '₹  ',
+                        prefixStyle: TextStyle(
+                          fontSize: 18,
+                          color: isDark
+                              ? Colors.grey.shade400
+                              : Colors.grey.shade600,
+                        ),
+                        suffixText: _currentPrice > 0
+                            ? 'LTP ₹${_currentPrice.toStringAsFixed(2)}'
+                            : null,
+                        suffixStyle: TextStyle(
+                          fontSize: 12,
+                          color: isDark
+                              ? Colors.grey.shade500
+                              : Colors.grey.shade600,
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(
+                            color: isDark
+                                ? Colors.white24
+                                : Colors.grey.shade300,
+                          ),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(
+                            color: Color(0xFF388E3C),
+                            width: 2,
+                          ),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 14,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.info_outline_rounded,
+                          size: 13,
+                          color: Colors.grey.shade500,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          isBuy
+                              ? 'Exits when LTP ≥ target (sell high)'
+                              : 'Exits when LTP ≤ target (buy back low)',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade500,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    Text(
+                      'Exit lots',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: isDark
+                            ? Colors.grey.shade400
+                            : Colors.grey.shade600,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _QtyButton(
+                          icon: Icons.remove,
+                          onTap: dialogLots > 1
+                              ? () => setDialogState(() => dialogLots--)
+                              : null,
+                          isDark: isDark,
+                          size: 36,
+                        ),
+                        const SizedBox(width: 20),
+                        Column(
+                          children: [
+                            Text(
+                              '$dialogLots',
+                              style: TextStyle(
+                                fontSize: 28,
+                                fontWeight: FontWeight.w700,
+                                color: isDark ? Colors.white : Colors.black,
+                              ),
+                            ),
+                            Text(
+                              'lot${dialogLots > 1 ? 's' : ''} (${dialogLots * lotSize} qty)',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isDark
+                                    ? Colors.grey.shade400
+                                    : Colors.grey.shade600,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(width: 20),
+                        _QtyButton(
+                          icon: Icons.add,
+                          onTap: dialogLots < maxLots
+                              ? () => setDialogState(() => dialogLots++)
+                              : null,
+                          isDark: isDark,
+                          size: 36,
+                        ),
+                      ],
+                    ),
+                    if (maxLots > 1) ...[
+                      const SizedBox(height: 4),
+                      SliderTheme(
+                        data: SliderTheme.of(dialogContext).copyWith(
+                          activeTrackColor: const Color(0xFF388E3C),
+                          inactiveTrackColor: isDark
+                              ? Colors.white12
+                              : Colors.grey.shade200,
+                          thumbColor: const Color(0xFF388E3C),
+                          overlayColor: const Color(
+                            0xFF388E3C,
+                          ).withValues(alpha: 0.15),
+                          trackHeight: 3,
+                          thumbShape: const RoundSliderThumbShape(
+                            enabledThumbRadius: 7,
+                          ),
+                        ),
+                        child: Slider(
+                          value: dialogLots.toDouble(),
+                          min: 1,
+                          max: maxLots.toDouble(),
+                          divisions: maxLots > 1 ? maxLots - 1 : 1,
+                          onChanged: (v) =>
+                              setDialogState(() => dialogLots = v.round()),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              '1',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.grey.shade500,
+                              ),
+                            ),
+                            Text(
+                              '$maxLots',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.grey.shade500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 24),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.pop(dialogContext, {
+                              'action': 'cancel',
+                            }),
+                            style: OutlinedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              side: BorderSide(
+                                color: isDark
+                                    ? Colors.white24
+                                    : Colors.grey.shade300,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: Text(
+                              'Cancel',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: isDark ? Colors.white70 : Colors.black87,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton(
+                            onPressed: () => Navigator.pop(dialogContext, {
+                              'action': 'set',
+                              'price': priceController.text.trim(),
+                              'lots': dialogLots,
+                            }),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF388E3C),
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              elevation: 0,
+                            ),
+                            child: Text(
+                              _exitLimitPrice > 0 ? 'Update' : 'Set target',
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+
+    if (result == null || !mounted) return;
+    final action = result['action'] as String?;
+
+    if (action == 'clear') {
+      await _clearLimitExit();
+      return;
+    }
+    if (action != 'set') return;
+
+    final newPrice = double.tryParse(result['price'] as String? ?? '');
+    if (newPrice == null || newPrice <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid target price'),
+          backgroundColor: Color(0xFFD32F2F),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final lots = result['lots'] as int? ?? maxLots;
+    final lotSize2 = _contractInfo?.lotSize ?? 1;
+    await _applyLimitExit(newPrice, lots * lotSize2);
+  }
+
+  Future<void> _applyLimitExit(double price, int qty) async {
+    setState(() => _isSettingLimitExit = true);
+    try {
+      await _repo.setExitLimitPrice(
+        widget.order.orderId,
+        exitLimitPrice: price,
+        exitLimitQty: qty,
+      );
+      if (!mounted) return;
+      setState(() {
+        _exitLimitPrice = price;
+        _exitLimitQty = qty;
+        _isSettingLimitExit = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Limit exit set at ₹${price.toStringAsFixed(2)} for ${widget.order.symbol}',
+          ),
+          backgroundColor: Theme.of(context).brightness == Brightness.dark
+              ? Colors.grey.shade800
+              : Colors.black87,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      widget.onClosed?.call();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSettingLimitExit = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to set limit exit: $e'),
+          backgroundColor: const Color(0xFFD32F2F),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 
-  // ── Modify limit price (for market-pending orders) ────────────────────────
+  Future<void> _clearLimitExit() async {
+    setState(() => _isSettingLimitExit = true);
+    try {
+      await _repo.setExitLimitPrice(widget.order.orderId, exitLimitPrice: 0);
+      if (!mounted) return;
+      setState(() {
+        _exitLimitPrice = 0;
+        _exitLimitQty = 0;
+        _isSettingLimitExit = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Limit exit cleared for ${widget.order.symbol}'),
+          backgroundColor: Theme.of(context).brightness == Brightness.dark
+              ? Colors.grey.shade800
+              : Colors.black87,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      widget.onClosed?.call();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSettingLimitExit = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to clear limit exit: $e'),
+          backgroundColor: const Color(0xFFD32F2F),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
 
   Future<void> _showModifyDialog() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final controller = TextEditingController();
+
+    setState(() => _isCancelling = true);
+    Map<String, dynamic>? orderDetails;
+    try {
+      orderDetails = await _repo.fetchOrderDetail(widget.order.orderId);
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() => _isCancelling = false);
+
+    final limitPriceFromApi = orderDetails?['limit_price'];
+    final ltpFromApi = orderDetails?['ltp'];
+
+    final limitPrice = (limitPriceFromApi is num)
+        ? limitPriceFromApi.toDouble()
+        : widget.order.price > 0
+        ? widget.order.price
+        : 0.0;
+    final ltp = (ltpFromApi is num) ? ltpFromApi.toDouble() : 0.0;
+
+    _modifyPriceController = TextEditingController(
+      text: limitPrice > 0 ? limitPrice.toStringAsFixed(2) : '',
+    );
+    final controller = _modifyPriceController!;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -921,6 +1744,13 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
                   prefixStyle: TextStyle(
                     fontSize: 18,
                     color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                  ),
+                  suffixText: ltp > 0
+                      ? 'Market: ₹${ltp.toStringAsFixed(2)}'
+                      : null,
+                  suffixStyle: TextStyle(
+                    fontSize: 12,
+                    color: isDark ? Colors.grey.shade500 : Colors.grey.shade600,
                   ),
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
@@ -1003,10 +1833,7 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
       ),
     );
 
-    // Read the value before dispose — always dispose in finally.
     final rawText = controller.text.trim();
-    controller.dispose();
-
     if (confirmed != true || !mounted) return;
 
     final newPrice = double.tryParse(rawText);
@@ -1050,8 +1877,6 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
       );
     }
   }
-
-  // ── Cancel pending order ──────────────────────────────────────────────────
 
   Future<void> _cancelPendingOrder() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -1211,11 +2036,15 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
     final isBuy = order.action == 'Buy';
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
+    final isClosed =
+        order.status == OrderStatus.closed ||
+        order.status == OrderStatus.cancelled;
+
     final pnlPerUnit = isBuy
         ? _currentPrice - order.price
         : order.price - _currentPrice;
     final totalPnl = pnlPerUnit * order.quantity;
-    final isProfit = totalPnl >= 0;
+    final isProfit = (order.realisedPnl ?? totalPnl) >= 0;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
@@ -1223,6 +2052,7 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Header ────────────────────────────────────────────────────────
           Row(
             children: [
               Expanded(
@@ -1253,18 +2083,32 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
             color: isDark ? Colors.white10 : Colors.grey.shade200,
           ),
           const SizedBox(height: 20),
+
+          // ── Detail rows ────────────────────────────────────────────────────
           _DetailRow(
-            label: 'Entry price',
+            label: isClosed ? 'Trade price' : 'Entry price',
             value: '₹${order.price.toStringAsFixed(2)}',
           ),
           const SizedBox(height: 12),
-          _DetailRow(
-            label: 'Current price',
-            value: _currentPrice > 0
-                ? '₹${_currentPrice.toStringAsFixed(2)}'
-                : '—',
-          ),
-          const SizedBox(height: 12),
+
+          // Exit price from tradebook (closed orders)
+          if (isClosed && order.exitPrice != null && order.exitPrice! > 0) ...[
+            _DetailRow(
+              label: 'Exit price',
+              value: '₹${order.exitPrice!.toStringAsFixed(2)}',
+            ),
+            const SizedBox(height: 12),
+          ],
+
+          if (order.status == OrderStatus.open) ...[
+            _DetailRow(
+              label: 'Current price',
+              value: _currentPrice > 0
+                  ? '₹${_currentPrice.toStringAsFixed(2)}'
+                  : '—',
+            ),
+            const SizedBox(height: 12),
+          ],
           if (_contractInfo != null) ...[
             _DetailRow(
               label: 'Lot size',
@@ -1272,54 +2116,151 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
             ),
             const SizedBox(height: 12),
           ],
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Live P&L',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+
+          // Realised P&L for closed orders (from tradebook)
+          if (isClosed && order.realisedPnl != null) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Realised P&L',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                  ),
                 ),
-              ),
-              _currentPrice > 0
-                  ? Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          '${isProfit ? '+' : ''}₹${totalPnl.toStringAsFixed(2)}',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                            color: isProfit
-                                ? const Color(0xFF81C784)
-                                : const Color(0xFFE57373),
+                Text(
+                  '${order.realisedPnl! >= 0 ? '+' : ''}₹${order.realisedPnl!.toStringAsFixed(2)}',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: isProfit
+                        ? const Color(0xFF81C784)
+                        : const Color(0xFFE57373),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          // Live P&L for open orders
+          if (order.status == OrderStatus.open) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Live P&L',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                  ),
+                ),
+                _currentPrice > 0
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            '${totalPnl >= 0 ? '+' : ''}₹${totalPnl.toStringAsFixed(2)}',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: totalPnl >= 0
+                                  ? const Color(0xFF81C784)
+                                  : const Color(0xFFE57373),
+                            ),
                           ),
-                        ),
-                        Text(
-                          '${isProfit ? '+' : ''}${order.price > 0 ? (pnlPerUnit / order.price * 100).toStringAsFixed(2) : '0.00'}%',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                            color: isProfit
-                                ? const Color(0xFF81C784)
-                                : const Color(0xFFE57373),
+                          Text(
+                            '${pnlPerUnit >= 0 ? '+' : ''}${order.price > 0 ? (pnlPerUnit / order.price * 100).toStringAsFixed(2) : '0.00'}%',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: pnlPerUnit >= 0
+                                  ? const Color(0xFF81C784)
+                                  : const Color(0xFFE57373),
+                            ),
                           ),
+                        ],
+                      )
+                    : Text(
+                        '—',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: isDark
+                              ? Colors.grey.shade500
+                              : Colors.grey.shade400,
                         ),
-                      ],
-                    )
-                  : Text(
-                      '—',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: isDark
-                            ? Colors.grey.shade500
-                            : Colors.grey.shade400,
+                      ),
+              ],
+            ),
+            const SizedBox(height: 20),
+
+            // Limit exit info box
+            if (_exitLimitPrice > 0) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: isDark
+                      ? const Color(0xFF1B5E20).withValues(alpha: 0.2)
+                      : const Color(0xFFE8F5E9),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.flag_rounded,
+                      size: 16,
+                      color: isDark
+                          ? const Color(0xFF81C784)
+                          : const Color(0xFF2E7D32),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Limit exit active · ₹${_exitLimitPrice.toStringAsFixed(2)}',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: isDark
+                                  ? const Color(0xFF81C784)
+                                  : const Color(0xFF2E7D32),
+                            ),
+                          ),
+                          if (_exitLimitQty > 0) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              'Qty: $_exitLimitQty  ·  '
+                              '${isBuy ? 'Triggers when LTP ≥ ₹${_exitLimitPrice.toStringAsFixed(2)}' : 'Triggers when LTP ≤ ₹${_exitLimitPrice.toStringAsFixed(2)}'}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isDark
+                                    ? const Color(
+                                        0xFF81C784,
+                                      ).withValues(alpha: 0.7)
+                                    : const Color(0xFF388E3C),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
             ],
-          ),
-          if (_contractLoading) ...[
+          ],
+
+          if (_contractLoading &&
+              (order.status == OrderStatus.open ||
+                  order.status == OrderStatus.pending)) ...[
             const SizedBox(height: 16),
             Row(
               children: [
@@ -1351,8 +2292,57 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
               ),
             ),
           ],
+
+          // ── OPEN order actions ─────────────────────────────────────────────
           if (order.status == OrderStatus.open) ...[
-            const SizedBox(height: 28),
+            const SizedBox(height: 8),
+            if (_isSettingLimitExit)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: SizedBox(
+                    height: 20,
+                    width: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              )
+            else
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _showLimitExitDialog,
+                  icon: Icon(
+                    _exitLimitPrice > 0
+                        ? Icons.flag_rounded
+                        : Icons.flag_outlined,
+                    size: 16,
+                    color: _exitLimitPrice > 0
+                        ? const Color(0xFF388E3C)
+                        : (isDark ? Colors.white70 : Colors.black87),
+                  ),
+                  label: Text(
+                    _exitLimitPrice > 0
+                        ? 'Edit target · ₹${_exitLimitPrice.toStringAsFixed(2)}'
+                        : 'Set limit exit',
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    foregroundColor: _exitLimitPrice > 0
+                        ? const Color(0xFF388E3C)
+                        : (isDark ? Colors.white70 : Colors.black87),
+                    side: BorderSide(
+                      color: _exitLimitPrice > 0
+                          ? const Color(0xFF388E3C)
+                          : (isDark ? Colors.white24 : Colors.grey.shade300),
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+            const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
@@ -1389,10 +2379,9 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
             ),
           ],
 
-          // ── Pending order actions ───────────────────────────────────────
+          // ── PENDING order actions ──────────────────────────────────────────
           if (order.status == OrderStatus.pending) ...[
             const SizedBox(height: 20),
-            // Info chip
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -1479,7 +2468,7 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
   }
 }
 
-// ─── _LimitOrderDetailSheet (for PENDING limit orders) ───────────────────────
+// ─── _LimitOrderDetailSheet ───────────────────────────────────────────────────
 
 class _LimitOrderDetailSheet extends StatefulWidget {
   final LimitOrder order;
@@ -1494,16 +2483,37 @@ class _LimitOrderDetailSheet extends StatefulWidget {
 class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
   final _repo = OrdersRepository();
   bool _isBusy = false;
+  Map<String, dynamic>? _orderDetails;
 
-  // ── Modify dialog ─────────────────────────────────────────────────────────
+  TextEditingController? _modifyPriceController;
+
+  Future<void> _loadOrderDetails() async {
+    try {
+      final details = await _repo.fetchOrderDetail(widget.order.orderId);
+      if (mounted) setState(() => _orderDetails = details);
+    } catch (_) {}
+  }
 
   Future<void> _showModifyDialog() async {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final controller = TextEditingController(
-      text: widget.order.limitPrice.toStringAsFixed(2),
-    );
+    await _loadOrderDetails();
+    if (!mounted) return;
 
-    final confirmed = await showDialog<bool>(
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    final limitPriceFromApi = _orderDetails?['limit_price'];
+    final ltpFromApi = _orderDetails?['ltp'];
+
+    final limitPrice = (limitPriceFromApi is num)
+        ? limitPriceFromApi.toDouble()
+        : widget.order.limitPrice;
+    final ltp = (ltpFromApi is num) ? ltpFromApi.toDouble() : 0.0;
+
+    _modifyPriceController = TextEditingController(
+      text: limitPrice.toStringAsFixed(2),
+    );
+    final controller = _modifyPriceController!;
+
+    final result = await showDialog<Map<String, dynamic>>(
       context: context,
       barrierColor: Colors.black54,
       builder: (dialogContext) => Dialog(
@@ -1549,6 +2559,13 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
                     fontSize: 18,
                     color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
                   ),
+                  suffixText: ltp > 0
+                      ? 'Market: ₹${ltp.toStringAsFixed(2)}'
+                      : null,
+                  suffixStyle: TextStyle(
+                    fontSize: 12,
+                    color: isDark ? Colors.grey.shade500 : Colors.grey.shade600,
+                  ),
                   enabledBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide(
@@ -1573,17 +2590,17 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
                 widget.order.action == 'Buy'
                     ? 'Trigger: LTP ≤ new limit price'
                     : 'Trigger: LTP ≥ new limit price',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: isDark ? Colors.grey.shade500 : Colors.grey.shade500,
-                ),
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
               ),
               const SizedBox(height: 28),
               Row(
                 children: [
                   Expanded(
                     child: OutlinedButton(
-                      onPressed: () => Navigator.pop(dialogContext, false),
+                      onPressed: () => Navigator.pop(dialogContext, {
+                        'confirmed': false,
+                        'price': '',
+                      }),
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         side: BorderSide(
@@ -1606,7 +2623,10 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
                   const SizedBox(width: 12),
                   Expanded(
                     child: ElevatedButton(
-                      onPressed: () => Navigator.pop(dialogContext, true),
+                      onPressed: () => Navigator.pop(dialogContext, {
+                        'confirmed': true,
+                        'price': controller.text.trim(),
+                      }),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF1565C0),
                         foregroundColor: Colors.white,
@@ -1633,12 +2653,11 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
       ),
     );
 
-    final rawText = controller.text.trim();
     controller.dispose();
 
-    if (confirmed != true || !mounted) return;
+    if (result?['confirmed'] != true || !mounted) return;
 
-    final newPrice = double.tryParse(rawText);
+    final newPrice = double.tryParse(result!['price'] as String? ?? '');
     if (newPrice == null || newPrice <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1682,8 +2701,6 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
       );
     }
   }
-
-  // ── Cancel confirm dialog ─────────────────────────────────────────────────
 
   Future<void> _showCancelConfirm() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -1772,9 +2789,7 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
       ),
     );
 
-    if (confirmed == true) {
-      await _cancelOrder();
-    }
+    if (confirmed == true) await _cancelOrder();
   }
 
   Future<void> _cancelOrder() async {
@@ -1818,7 +2833,6 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Header ─────────────────────────────────────────────────────────
           Row(
             children: [
               Expanded(
@@ -1831,7 +2845,6 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
                   ),
                 ),
               ),
-              // Limit badge
               Container(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 10,
@@ -1871,8 +2884,6 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
             color: isDark ? Colors.white10 : Colors.grey.shade200,
           ),
           const SizedBox(height: 20),
-
-          // ── Details ────────────────────────────────────────────────────────
           _DetailRow(
             label: 'Limit price',
             value: '₹${order.limitPrice.toStringAsFixed(2)}',
@@ -1885,8 +2896,6 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
             value: isBuy ? 'LTP ≤ limit price' : 'LTP ≥ limit price',
           ),
           const SizedBox(height: 12),
-
-          // ── Status info box ────────────────────────────────────────────────
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -1920,10 +2929,7 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
               ],
             ),
           ),
-
           const SizedBox(height: 28),
-
-          // ── Action buttons ─────────────────────────────────────────────────
           if (_isBusy)
             const Center(
               child: SizedBox(
@@ -1935,7 +2941,6 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
           else
             Row(
               children: [
-                // Cancel order button
                 Expanded(
                   child: OutlinedButton.icon(
                     onPressed: _showCancelConfirm,
@@ -1952,7 +2957,6 @@ class _LimitOrderDetailSheetState extends State<_LimitOrderDetailSheet> {
                   ),
                 ),
                 const SizedBox(width: 12),
-                // Modify button
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: _showModifyDialog,
@@ -2095,9 +3099,7 @@ class _StatusBadge extends StatelessWidget {
   }
 }
 
-// ─── Combined pending item (union type) ──────────────────────────────────────
-// The Pending tab shows both market-order pending items (Order) and
-// limit orders (LimitOrder). This sealed class wraps both.
+// ─── Combined pending item ────────────────────────────────────────────────────
 
 sealed class _PendingItem {}
 
@@ -2111,7 +3113,7 @@ class _PendingLimit extends _PendingItem {
   _PendingLimit(this.order);
 }
 
-// ─── Screen + Tabs ────────────────────────────────────────────────────────────
+// ─── Screen ───────────────────────────────────────────────────────────────────
 
 class OrdersScreen extends ConsumerStatefulWidget {
   const OrdersScreen({super.key});
@@ -2126,10 +3128,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
   final _repo = OrdersRepository();
   final _pnlWs = PnlWebSocket();
 
-  // orders from /orders/:userId (open, closed, cancelled)
-  late Future<List<Order>> _ordersFuture;
-  // limit orders from /positions/:userId
-  late Future<List<LimitOrder>> _limitOrdersFuture;
+  late Future<OrdersScreenData> _dataFuture;
 
   final Map<String, double> _ltpMap = {};
   StreamSubscription<Map<String, double>>? _ltpSub;
@@ -2140,18 +3139,12 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
   void initState() {
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
-    _ordersFuture = _repo.fetchOrders(_userId);
-    _limitOrdersFuture = _fetchLimitOrders();
+    _dataFuture = _repo.fetchAll(_userId);
 
     _pnlWs.connect(_userId);
     _ltpSub = _pnlWs.ltpStream.listen((ltpMap) {
       if (mounted) setState(() => _ltpMap.addAll(ltpMap));
     });
-  }
-
-  Future<List<LimitOrder>> _fetchLimitOrders() async {
-    final positions = await _repo.fetchPositions(_userId);
-    return positions.pendingLimitOrders;
   }
 
   @override
@@ -2164,8 +3157,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
 
   void _refresh() {
     setState(() {
-      _ordersFuture = _repo.fetchOrders(_userId);
-      _limitOrdersFuture = _fetchLimitOrders();
+      _dataFuture = _repo.fetchAll(_userId);
     });
   }
 
@@ -2185,143 +3177,122 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
 
     return Container(
       color: isDark ? const Color(0xFF121212) : Colors.white,
-      // We need both futures to render fully. Use a nested FutureBuilder approach.
-      child: FutureBuilder<List<Order>>(
-        future: _ordersFuture,
-        builder: (context, ordersSnap) {
-          // Show a spinner only on the very first load (no data yet).
-          if (ordersSnap.connectionState == ConnectionState.waiting &&
-              !ordersSnap.hasData) {
+      child: FutureBuilder<OrdersScreenData>(
+        future: _dataFuture,
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting &&
+              !snap.hasData) {
             return const Center(child: CircularProgressIndicator());
           }
 
-          if (ordersSnap.hasError) {
-            return _buildError(isDark, ordersSnap.error.toString(), _refresh);
+          if (snap.hasError) {
+            return _buildError(isDark, snap.error.toString(), _refresh);
           }
 
-          return FutureBuilder<List<LimitOrder>>(
-            future: _limitOrdersFuture,
-            builder: (context, limitSnap) {
-              final allOrders = _withLivePrices(ordersSnap.data ?? []);
-              final limitOrders = limitSnap.data ?? [];
+          final data = snap.data!;
+          final allOrders = _withLivePrices(data.orders);
+          final limitOrders = data.limitOrders;
 
-              return Column(
-                children: [
-                  TabBar(
-                    isScrollable: true,
-                    controller: _tabController,
-                    labelColor: isDark ? Colors.white : Colors.black,
-                    unselectedLabelColor: Colors.grey.shade500,
-                    indicatorColor: isDark ? Colors.white : Colors.black,
-                    indicatorWeight: 2,
-                    dividerColor: Colors.transparent,
-                    labelStyle: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                    ),
-                    unselectedLabelStyle: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w400,
-                    ),
-                    tabs: [
-                      const Tab(text: 'All'),
-                      // Show badge on Pending tab when there are limit orders
-                      Tab(
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text('Pending'),
-                            if (limitOrders.isNotEmpty) ...[
-                              const SizedBox(width: 6),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                  vertical: 2,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: isDark
-                                      ? const Color(
-                                          0xFF4A148C,
-                                        ).withValues(alpha: 0.4)
-                                      : const Color(0xFFEDE7F6),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Text(
-                                  '${limitOrders.length}',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w700,
-                                    color: isDark
-                                        ? const Color(0xFFCE93D8)
-                                        : const Color(0xFF6A1B9A),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                      const Tab(text: 'Open'),
-                      const Tab(text: 'Cancelled'),
-                    ],
-                  ),
-                  Divider(
-                    height: 1,
-                    thickness: 1,
-                    color: isDark ? Colors.white10 : Colors.grey.shade200,
-                  ),
-                  Expanded(
-                    child: TabBarView(
-                      controller: _tabController,
+          return Column(
+            children: [
+              TabBar(
+                isScrollable: true,
+                controller: _tabController,
+                labelColor: isDark ? Colors.white : Colors.black,
+                unselectedLabelColor: Colors.grey.shade500,
+                indicatorColor: isDark ? Colors.white : Colors.black,
+                indicatorWeight: 2,
+                dividerColor: Colors.transparent,
+                labelStyle: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                ),
+                unselectedLabelStyle: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w400,
+                ),
+                tabs: [
+                  const Tab(text: 'All'),
+                  Tab(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        // ── All tab ─────────────────────────────────────────
-                        _buildOrderList(isDark: isDark, orders: allOrders),
-
-                        // ── Pending tab ─────────────────────────────────────
-                        _buildPendingTab(
-                          isDark: isDark,
-                          orders: allOrders
-                              .where((o) => o.status == OrderStatus.pending)
-                              .toList(),
-                          limitOrders: limitOrders,
-                          isLoadingLimits:
-                              limitSnap.connectionState ==
-                              ConnectionState.waiting,
-                        ),
-
-                        // ── Open tab ────────────────────────────────────────
-                        _buildOrderList(
-                          isDark: isDark,
-                          orders: allOrders
-                              .where((o) => o.status == OrderStatus.open)
-                              .toList(),
-                        ),
-
-                        // ── Cancelled tab ───────────────────────────────────
-                        _buildOrderList(
-                          isDark: isDark,
-                          orders: allOrders
-                              .where((o) => o.status == OrderStatus.cancelled)
-                              .toList(),
-                        ),
+                        const Text('Pending'),
+                        if (limitOrders.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isDark
+                                  ? const Color(
+                                      0xFF4A148C,
+                                    ).withValues(alpha: 0.4)
+                                  : const Color(0xFFEDE7F6),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '${limitOrders.length}',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: isDark
+                                    ? const Color(0xFFCE93D8)
+                                    : const Color(0xFF6A1B9A),
+                              ),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
+                  const Tab(text: 'Open'),
+                  const Tab(text: 'Cancelled'),
                 ],
-              );
-            },
+              ),
+              Divider(
+                height: 1,
+                thickness: 1,
+                color: isDark ? Colors.white10 : Colors.grey.shade200,
+              ),
+              Expanded(
+                child: TabBarView(
+                  controller: _tabController,
+                  children: [
+                    _buildOrderList(isDark: isDark, orders: allOrders),
+                    _buildPendingTab(
+                      isDark: isDark,
+                      orders: allOrders
+                          .where((o) => o.status == OrderStatus.pending)
+                          .toList(),
+                      limitOrders: limitOrders,
+                    ),
+                    _buildOrderList(
+                      isDark: isDark,
+                      orders: allOrders
+                          .where((o) => o.status == OrderStatus.open)
+                          .toList(),
+                    ),
+                    _buildOrderList(
+                      isDark: isDark,
+                      orders: allOrders
+                          .where((o) => o.status == OrderStatus.cancelled)
+                          .toList(),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           );
         },
       ),
     );
   }
 
-  // ── Tab builders ────────────────────────────────────────────────────────────
-
   Widget _buildOrderList({required bool isDark, required List<Order> orders}) {
-    if (orders.isEmpty) {
-      return _emptyState(isDark);
-    }
+    if (orders.isEmpty) return _emptyState(isDark);
     return RefreshIndicator(
       onRefresh: () async => _refresh(),
       child: ListView.separated(
@@ -2330,7 +3301,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
           bottom: MediaQuery.of(context).padding.bottom + 100,
         ),
         itemCount: orders.length,
-        separatorBuilder: (_, _) => Divider(
+        separatorBuilder: (_, __) => Divider(
           height: 1,
           thickness: 1,
           color: isDark ? Colors.white10 : Colors.grey.shade100,
@@ -2354,18 +3325,13 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
     required bool isDark,
     required List<Order> orders,
     required List<LimitOrder> limitOrders,
-    required bool isLoadingLimits,
   }) {
-    // Build a unified list: limit orders first (they are actionable), then
-    // market-pending orders below.
     final items = <_PendingItem>[
       ...limitOrders.map(_PendingLimit.new),
       ...orders.map(_PendingOrder.new),
     ];
 
-    if (items.isEmpty && !isLoadingLimits) {
-      return _emptyState(isDark);
-    }
+    if (items.isEmpty) return _emptyState(isDark);
 
     return RefreshIndicator(
       onRefresh: () async => _refresh(),
@@ -2374,9 +3340,8 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
           top: 8,
           bottom: MediaQuery.of(context).padding.bottom + 100,
         ),
-        // +1 for the optional loading spinner row when limits are still loading
-        itemCount: items.length + (isLoadingLimits ? 1 : 0),
-        separatorBuilder: (_, _) => Divider(
+        itemCount: items.length,
+        separatorBuilder: (_, __) => Divider(
           height: 1,
           thickness: 1,
           color: isDark ? Colors.white10 : Colors.grey.shade100,
@@ -2384,30 +3349,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
           endIndent: 16,
         ),
         itemBuilder: (context, index) {
-          // Loading shimmer row at the top while /positions is in-flight
-          if (isLoadingLimits && index == 0) {
-            return Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                children: [
-                  const SizedBox(
-                    height: 14,
-                    width: 14,
-                    child: CircularProgressIndicator(strokeWidth: 1.5),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    'Loading limit orders…',
-                    style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
-                  ),
-                ],
-              ),
-            );
-          }
-
-          final itemIndex = isLoadingLimits ? index - 1 : index;
-          final item = items[itemIndex];
-
+          final item = items[index];
           return switch (item) {
             _PendingOrder(order: final o) => _OrderTile(
               order: o,
@@ -2489,7 +3431,7 @@ class _OrdersScreenState extends ConsumerState<OrdersScreen>
   }
 }
 
-// ─── Order tile (for OPEN / ALL / CANCELLED orders) ───────────────────────────
+// ─── Order tile ───────────────────────────────────────────────────────────────
 
 class _OrderTile extends StatelessWidget {
   final Order order;
@@ -2509,7 +3451,12 @@ class _OrderTile extends StatelessWidget {
         ? order.currentPrice - order.price
         : order.price - order.currentPrice;
     final totalPnl = pnlPerUnit * order.quantity;
-    final isProfit = totalPnl >= 0;
+
+    // For closed orders prefer tradebook realised P&L
+    final displayPnl = order.realisedPnl ?? totalPnl;
+    final isProfit = displayPnl >= 0;
+
+    final isClosed = order.status == OrderStatus.closed;
 
     return InkWell(
       onTap: onTap,
@@ -2533,13 +3480,28 @@ class _OrderTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    order.symbol,
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: isDark ? Colors.white : Colors.black,
-                    ),
+                  Row(
+                    children: [
+                      Text(
+                        order.symbol,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: isDark ? Colors.white : Colors.black,
+                        ),
+                      ),
+                      if (order.status == OrderStatus.open &&
+                          order.hasLimitExit) ...[
+                        const SizedBox(width: 6),
+                        Icon(
+                          Icons.flag_rounded,
+                          size: 13,
+                          color: isDark
+                              ? const Color(0xFF81C784)
+                              : const Color(0xFF2E7D32),
+                        ),
+                      ],
+                    ],
                   ),
                   const SizedBox(height: 4),
                   Row(
@@ -2576,7 +3538,13 @@ class _OrderTile extends StatelessWidget {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        '${order.quantity} qty  ·  avg ₹${order.price.toStringAsFixed(2)}',
+                        order.status == OrderStatus.pending &&
+                                order.limitPrice > 0
+                            ? '${order.quantity} qty  ·  limit ₹${order.limitPrice.toStringAsFixed(2)}'
+                            : order.status == OrderStatus.open &&
+                                  order.price > 0
+                            ? '${order.quantity} qty  ·  avg ₹${order.price.toStringAsFixed(2)}'
+                            : '${order.quantity} qty',
                         style: TextStyle(
                           fontSize: 12,
                           color: Colors.grey.shade500,
@@ -2601,24 +3569,35 @@ class _OrderTile extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 4),
-                hasLivePrice
-                    ? Text(
-                        '${isProfit ? '+' : ''}₹${totalPnl.toStringAsFixed(2)}',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: isProfit
-                              ? const Color(0xFF81C784)
-                              : const Color(0xFFE57373),
-                        ),
-                      )
-                    : Text(
-                        '₹${order.totalValue.toStringAsFixed(2)}',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey.shade500,
-                        ),
-                      ),
+                // Closed: show realised P&L from tradebook
+                if (isClosed && order.realisedPnl != null)
+                  Text(
+                    '${isProfit ? '+' : ''}₹${order.realisedPnl!.toStringAsFixed(2)}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: isProfit
+                          ? const Color(0xFF81C784)
+                          : const Color(0xFFE57373),
+                    ),
+                  )
+                // Open: show live P&L
+                else if (order.status != OrderStatus.pending && hasLivePrice)
+                  Text(
+                    '${totalPnl >= 0 ? '+' : ''}₹${totalPnl.toStringAsFixed(2)}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: totalPnl >= 0
+                          ? const Color(0xFF81C784)
+                          : const Color(0xFFE57373),
+                    ),
+                  )
+                else if (order.status != OrderStatus.pending)
+                  Text(
+                    '₹${order.totalValue.toStringAsFixed(2)}',
+                    style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                  ),
               ],
             ),
           ],
@@ -2628,7 +3607,7 @@ class _OrderTile extends StatelessWidget {
   }
 }
 
-// ─── Limit order tile (for PENDING limit orders) ──────────────────────────────
+// ─── Limit order tile ─────────────────────────────────────────────────────────
 
 class _LimitOrderTile extends StatelessWidget {
   final LimitOrder order;
@@ -2673,7 +3652,6 @@ class _LimitOrderTile extends StatelessWidget {
                   const SizedBox(height: 4),
                   Row(
                     children: [
-                      // BUY/SELL badge
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 6,
@@ -2705,7 +3683,6 @@ class _LimitOrderTile extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 6),
-                      // LIMIT badge
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 6,
@@ -2741,7 +3718,6 @@ class _LimitOrderTile extends StatelessWidget {
                 ],
               ),
             ),
-            // Right side: limit price + trigger hint
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [

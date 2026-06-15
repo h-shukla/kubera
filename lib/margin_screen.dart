@@ -69,12 +69,15 @@ class PositionData {
         : null,
   );
 
+  // FIX: Only compute P&L when avgEntryPrice > 0 (i.e. order is actually filled)
   PositionData copyWithLtp(double ltp) {
-    final netIsBuy = netQty > 0;
+    final bool isFilled = avgEntryPrice > 0;
 
-    final pnl = netIsBuy
-        ? (ltp - avgEntryPrice) * netQty.abs()
-        : (avgEntryPrice - ltp) * netQty.abs();
+    final pnl = isFilled
+        ? (netQty > 0
+              ? (ltp - avgEntryPrice) * netQty.abs()
+              : (avgEntryPrice - ltp) * netQty.abs())
+        : null;
 
     return PositionData(
       contractName: contractName,
@@ -427,18 +430,19 @@ class _MarginContent extends StatelessWidget {
         ? Colors.white.withValues(alpha: 0.05)
         : const Color(0xFFF4F4F5);
 
-    final primaryTextColor = isDark ? Colors.white : Colors.black;
-
     final totalMarginCap = wallet.marginUsed + wallet.available;
 
     final utilization = totalMarginCap > 0
         ? wallet.marginUsed / totalMarginCap
         : 0.0;
 
-    final totalUnrealisedPnl = positions.fold<double>(
-      0,
-      (sum, p) => sum + (p.unrealisedPnl ?? 0),
-    );
+    // FIX: Only sum P&L from filled positions (avgEntryPrice > 0)
+    final totalUnrealisedPnl = positions
+        .where((p) => p.avgEntryPrice > 0)
+        .fold<double>(0, (sum, p) => sum + (p.unrealisedPnl ?? 0));
+
+    // Only show unrealised P&L row if there are filled positions
+    final hasFilledPositions = positions.any((p) => p.avgEntryPrice > 0);
 
     final totalBookedPnl = bookedPositions.fold<double>(
       0,
@@ -483,7 +487,8 @@ class _MarginContent extends StatelessWidget {
                   value: '₹${_fmt(totalMarginCap)}',
                 ),
 
-                if (positions.isNotEmpty) ...[
+                // FIX: Only show unrealised P&L row when there are filled positions
+                if (hasFilledPositions) ...[
                   const SizedBox(height: 12),
 
                   _MarginRow(
@@ -850,8 +855,9 @@ class _PositionRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    final pnl = position.unrealisedPnl;
-
+    // FIX: Don't show P&L if the position is not yet filled (avgEntryPrice == 0)
+    final bool isFilled = position.avgEntryPrice > 0;
+    final pnl = isFilled ? position.unrealisedPnl : null;
     final isProfit = (pnl ?? 0) >= 0;
 
     return Padding(
@@ -901,7 +907,7 @@ class _PositionRow extends StatelessWidget {
           Expanded(
             flex: 3,
             child: Text(
-              '₹${position.avgEntryPrice.toStringAsFixed(2)}',
+              isFilled ? '₹${position.avgEntryPrice.toStringAsFixed(2)}' : '—',
               style: TextStyle(
                 fontSize: 13,
                 color: isDark ? Colors.grey.shade300 : Colors.black,

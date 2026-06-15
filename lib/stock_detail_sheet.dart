@@ -34,7 +34,11 @@ class _ContractInfo {
     );
   }
 
-  bool get isLive => ltpStatus == 'live';
+  // ← Fix: case-insensitive + also treat non-zero ltp as live fallback
+  bool get isLive =>
+      ltpStatus.toLowerCase() == 'live' ||
+      ltpStatus.toLowerCase() == 'active' ||
+      (ltpStatus == 'not_in_feed' && ltp > 0);
 }
 
 // ── StockDetailSheet ──────────────────────────────────────────────────────────
@@ -102,14 +106,20 @@ class _StockDetailSheetState extends ConsumerState<StockDetailSheet>
 
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body) as Map<String, dynamic>;
+        debugPrint(response.body);
+        debugPrint(
+          '📡 contract/${widget.token} → ltp_status: ${json['ltp_status']}, ltp: ${json['ltp']}',
+        );
         setState(() {
           _contractInfo = _ContractInfo.fromJson(json);
           _contractLoading = false;
         });
       } else {
+        debugPrint('❌ contract/${widget.token} → HTTP ${response.statusCode}');
         setState(() => _contractLoading = false);
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('❌ contract/${widget.token} → $e');
       if (mounted) setState(() => _contractLoading = false);
     }
   }

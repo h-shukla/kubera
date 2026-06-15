@@ -114,8 +114,8 @@ class TradebookApi {
     final decoded = jsonDecode(response.body);
 
     // DEBUG PRINT
-    // debugPrint("TRADEBOOK API RESPONSE:");
-    // debugPrint(const JsonEncoder.withIndent('  ').convert(decoded));
+    debugPrint("TRADEBOOK API RESPONSE:");
+    debugPrint(const JsonEncoder.withIndent('  ').convert(decoded));
 
     // API returns { trades: [...] }
     if (decoded is Map && decoded['trades'] is List) {

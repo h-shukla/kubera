@@ -49,6 +49,11 @@ class TransactionData {
   final String? orderType; // 'MARKET' | 'LIMIT'
   final double? pricePerUnit;
   final String? status; // 'EXECUTED' | 'PENDING' | 'REJECTED'
+  final String? leg; // 'ENTRY' | 'EXIT'
+
+  // Entry / exit prices
+  final double? entryPrice;
+  final double? exitPrice;
 
   // P&L settlement
   final double? realisedPnl;
@@ -67,6 +72,9 @@ class TransactionData {
     this.orderType,
     this.pricePerUnit,
     this.status,
+    this.leg,
+    this.entryPrice,
+    this.exitPrice,
     this.realisedPnl,
   });
 
@@ -87,6 +95,13 @@ class TransactionData {
             ? (json['price_per_unit'] as num).toDouble()
             : null,
         status: json['status'] as String?,
+        leg: json['leg'] as String?,
+        entryPrice: json['entry_price'] != null
+            ? (json['entry_price'] as num).toDouble()
+            : null,
+        exitPrice: json['exit_price'] != null
+            ? (json['exit_price'] as num).toDouble()
+            : null,
         realisedPnl: json['realised_pnl'] != null
             ? (json['realised_pnl'] as num).toDouble()
             : null,
@@ -111,6 +126,12 @@ TransactionData _tradeToTransaction(TradeBookEntry trade) {
   final totalValue = trade.tradePrice * trade.quantity;
   final isCredit = trade.action.toLowerCase() == 'sell';
 
+  // Set entry/exit prices based on leg type
+  final entryPrice = trade.leg.toUpperCase() == 'ENTRY'
+      ? trade.tradePrice
+      : null;
+  final exitPrice = trade.leg.toUpperCase() == 'EXIT' ? trade.tradePrice : null;
+
   return TransactionData(
     id: trade.symbolCode,
     title: '${trade.action.toUpperCase()} ${trade.symbolName}',
@@ -121,15 +142,16 @@ TransactionData _tradeToTransaction(TradeBookEntry trade) {
     symbol: trade.symbolName,
     side: trade.action.toUpperCase(),
     qty: trade.quantity,
-    productType: null, // Not available from tradebook
-    orderType: null, // Not available from tradebook
+    productType: null,
+    orderType: null,
     pricePerUnit: trade.tradePrice,
     status: 'EXECUTED',
+    leg: trade.leg,
+    entryPrice: entryPrice,
+    exitPrice: exitPrice,
     realisedPnl: trade.pnl,
   );
 }
-
-
 
 // ─── Providers ─────────────────────────────────────────────────────────────
 
@@ -139,6 +161,10 @@ final walletProvider = FutureProvider.family<WalletData, String>((
 ) async {
   final uri = Uri.parse('http://69.62.75.117:8000/auth/wallet/$userId');
   final response = await http.get(uri);
+
+  debugPrint(
+    'Wallet API response: ${response.statusCode} ${response.body} for userId: $userId',
+  );
 
   if (response.statusCode == 200) {
     return WalletData.fromJson(jsonDecode(response.body));
@@ -321,7 +347,7 @@ class _WalletBody extends ConsumerWidget {
   }
 }
 
-// ─── Wallet Card (mirrors MarginScreen summary card) ───────────────────────
+// ─── Wallet Card ───────────────────────────────────────────────────────────
 
 class _WalletCard extends StatelessWidget {
   final WalletData wallet;
@@ -359,7 +385,6 @@ class _WalletCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Balance (prominent)
           Text(
             'Total Balance',
             style: TextStyle(
@@ -383,7 +408,6 @@ class _WalletCard extends StatelessWidget {
           Divider(color: borderColor, height: 1),
           const SizedBox(height: 16),
 
-          // Three stat rows
           _MarginRow(
             label: 'Available Margin',
             value: '₹${_fmt(wallet.available)}',
@@ -405,7 +429,6 @@ class _WalletCard extends StatelessWidget {
 
           const SizedBox(height: 20),
 
-          // Utilization bar
           ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: LinearProgressIndicator(
@@ -485,12 +508,12 @@ class _TransactionTile extends StatelessWidget {
     return '${d.day} ${months[d.month - 1]} · $h:$m $ampm';
   }
 
-  /// One-line context tag shown below title (no payment mode).
   String _contextLine() {
     switch (tx.category) {
       case TxCategory.order:
         final parts = <String>[];
         if (tx.qty != null) parts.add('${tx.qty} qty');
+        if (tx.leg != null) parts.add(tx.leg!);
         if (tx.productType != null) parts.add(tx.productType!);
         if (tx.orderType != null) parts.add(tx.orderType!);
         return parts.join(' · ');
@@ -499,6 +522,21 @@ class _TransactionTile extends StatelessWidget {
       case TxCategory.marginAdjustment:
         return 'Margin Adjustment';
     }
+  }
+
+  /// Entry/exit price summary line shown in the tile.
+  String? _priceLine() {
+    if (tx.category != TxCategory.order) return null;
+    if (tx.entryPrice == null && tx.exitPrice == null) return null;
+
+    final parts = <String>[];
+    if (tx.entryPrice != null) {
+      parts.add('Entry ₹${tx.entryPrice!.toStringAsFixed(2)}');
+    }
+    if (tx.exitPrice != null) {
+      parts.add('Exit ₹${tx.exitPrice!.toStringAsFixed(2)}');
+    }
+    return parts.join('  →  ');
   }
 
   IconData _icon() {
@@ -522,7 +560,8 @@ class _TransactionTile extends StatelessWidget {
         ? _gainColor.withValues(alpha: 0.12)
         : _lossColor.withValues(alpha: 0.12);
     final dividerColor = isDark ? Colors.white10 : Colors.grey.shade200;
-    final context2 = _contextLine();
+    final contextLine = _contextLine();
+    final priceLine = _priceLine();
 
     return Column(
       children: [
@@ -531,6 +570,7 @@ class _TransactionTile extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 // Icon
                 Container(
@@ -544,7 +584,7 @@ class _TransactionTile extends StatelessWidget {
                 ),
                 const SizedBox(width: 12),
 
-                // Title + context
+                // Title + context + price line
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -557,15 +597,28 @@ class _TransactionTile extends StatelessWidget {
                           color: isDark ? Colors.white : Colors.black,
                         ),
                       ),
-                      if (context2.isNotEmpty) ...[
+                      if (contextLine.isNotEmpty) ...[
                         const SizedBox(height: 2),
                         Text(
-                          context2,
+                          contextLine,
                           style: TextStyle(
                             fontSize: 12,
                             color: isDark
                                 ? Colors.grey.shade600
                                 : Colors.grey.shade500,
+                          ),
+                        ),
+                      ],
+                      if (priceLine != null) ...[
+                        const SizedBox(height: 3),
+                        Text(
+                          priceLine,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                            color: isDark
+                                ? Colors.grey.shade500
+                                : Colors.grey.shade600,
                           ),
                         ),
                       ],
@@ -777,6 +830,12 @@ class _TxDetailSheet extends StatelessWidget {
             valueColor: valueColor,
           ),
           _DetailRow(
+            label: 'Leg',
+            value: tx.leg ?? '—',
+            labelColor: labelColor,
+            valueColor: valueColor,
+          ),
+          _DetailRow(
             label: 'Side',
             value: tx.side ?? '—',
             labelColor: labelColor,
@@ -789,8 +848,17 @@ class _TxDetailSheet extends StatelessWidget {
             labelColor: labelColor,
             valueColor: valueColor,
           ),
+          // ── Entry / Exit price block ──────────────────────────────
+          if (tx.entryPrice != null || tx.exitPrice != null)
+            _PriceRow(
+              entryPrice: tx.entryPrice,
+              exitPrice: tx.exitPrice,
+              isDark: isDark,
+              labelColor: labelColor,
+              valueColor: valueColor,
+            ),
           _DetailRow(
-            label: 'Price / Unit',
+            label: 'Trade Price',
             value: tx.pricePerUnit != null
                 ? '₹${tx.pricePerUnit!.toStringAsFixed(2)}'
                 : '—',
@@ -817,6 +885,17 @@ class _TxDetailSheet extends StatelessWidget {
             valueColor: accentColor,
             valueBold: true,
           ),
+          if (tx.realisedPnl != null)
+            _DetailRow(
+              label: 'Realised P&L',
+              value:
+                  '${tx.realisedPnl! >= 0 ? '+' : ''}₹${tx.realisedPnl!.toStringAsFixed(2)}',
+              labelColor: labelColor,
+              valueColor: tx.realisedPnl! >= 0
+                  ? const Color(0xFF3FD47E)
+                  : const Color(0xFFE05252),
+              valueBold: true,
+            ),
         ];
 
       case TxCategory.pnlSettlement:
@@ -877,6 +956,110 @@ class _TxDetailSheet extends StatelessWidget {
     }
   }
 }
+
+// ─── Entry / Exit Price Row ─────────────────────────────────────────────────
+
+/// A compact two-cell price display used in the detail sheet.
+class _PriceRow extends StatelessWidget {
+  final double? entryPrice;
+  final double? exitPrice;
+  final bool isDark;
+  final Color labelColor;
+  final Color valueColor;
+
+  const _PriceRow({
+    required this.entryPrice,
+    required this.exitPrice,
+    required this.isDark,
+    required this.labelColor,
+    required this.valueColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cardBg = isDark ? const Color(0xFF2A2A2A) : const Color(0xFFF5F5F7);
+    final borderColor = isDark ? Colors.white10 : const Color(0xFFE5E5E7);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Container(
+        decoration: BoxDecoration(
+          color: cardBg,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: borderColor),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
+          children: [
+            // Entry
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Entry Price',
+                    style: TextStyle(fontSize: 11, color: labelColor),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    entryPrice != null
+                        ? '₹${entryPrice!.toStringAsFixed(2)}'
+                        : '—',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: valueColor,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Arrow divider
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Icon(
+                Icons.arrow_forward_rounded,
+                size: 16,
+                color: labelColor,
+              ),
+            ),
+
+            // Exit
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    'Exit Price',
+                    style: TextStyle(fontSize: 11, color: labelColor),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    exitPrice != null
+                        ? '₹${exitPrice!.toStringAsFixed(2)}'
+                        : '—',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: exitPrice != null && entryPrice != null
+                          ? (exitPrice! >= entryPrice!
+                                ? const Color(0xFF3FD47E)
+                                : const Color(0xFFE05252))
+                          : valueColor,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Detail Row ─────────────────────────────────────────────────────────────
 
 class _DetailRow extends StatelessWidget {
   final String label;
