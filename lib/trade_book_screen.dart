@@ -244,8 +244,8 @@ void _showTradeDetail(BuildContext context, TradeBookEntry entry) {
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(6),
                     color: isBuy
-                        ? Colors.green.withOpacity(0.15)
-                        : Colors.red.withOpacity(0.15),
+                        ? Colors.green.withValues(alpha: 0.15)
+                        : Colors.red.withValues(alpha: 0.15),
                   ),
                   child: Text(
                     entry.action.toUpperCase(),
@@ -456,7 +456,7 @@ class _TradeBookScreenState extends ConsumerState<TradeBookScreen> {
                       child: ListView.separated(
                         itemCount: trades.length,
 
-                        separatorBuilder: (_, __) => Divider(
+                        separatorBuilder: (_, _) => Divider(
                           height: 1,
                           thickness: 1,
                           color: borderColor,

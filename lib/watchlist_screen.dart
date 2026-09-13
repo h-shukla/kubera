@@ -157,8 +157,9 @@ class _WatchlistScreenState extends ConsumerState<WatchlistScreen> {
 
       // Only add if it's the current or next month contract
       if (!matchedName.contains(currentMonthCode) &&
-          !matchedName.contains(nextMonthCode))
+          !matchedName.contains(nextMonthCode)) {
         continue;
+      }
 
       final ohlc = feedEntry['ohlc'] as Map<String, dynamic>? ?? {};
       final double lastPrice =

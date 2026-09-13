@@ -624,7 +624,7 @@ class _MarginContent extends StatelessWidget {
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
                     itemCount: positions.length,
-                    separatorBuilder: (_, __) =>
+                    separatorBuilder: (_, _) =>
                         Divider(height: 1, thickness: 1, color: borderColor),
                     itemBuilder: (context, index) =>
                         _PositionRow(position: positions[index]),
@@ -691,7 +691,7 @@ class _MarginContent extends StatelessWidget {
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
                     itemCount: bookedPositions.length,
-                    separatorBuilder: (_, __) =>
+                    separatorBuilder: (_, _) =>
                         Divider(height: 1, thickness: 1, color: borderColor),
                     itemBuilder: (context, index) {
                       final trade = bookedPositions[index];

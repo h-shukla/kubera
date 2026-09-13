@@ -963,10 +963,12 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
                         Text(
                           () {
                             final total = _actualQty * _effectivePrice;
-                            if (total >= 1e7)
+                            if (total >= 1e7) {
                               return '₹${(total / 1e7).toStringAsFixed(2)}Cr';
-                            if (total >= 1e5)
+                            }
+                            if (total >= 1e5) {
                               return '₹${(total / 1e5).toStringAsFixed(2)}L';
+                            }
                             return '₹${total.toStringAsFixed(2)}';
                           }(),
                           style: theme.textTheme.bodyMedium?.copyWith(
@@ -1013,12 +1015,15 @@ class _IndexOrderDialogState extends ConsumerState<_IndexOrderDialog> {
                         Text(
                           () {
                             final margin = (_actualQty * _effectivePrice) / 7;
-                            if (margin >= 1e7)
+                            if (margin >= 1e7) {
                               return '₹${(margin / 1e7).toStringAsFixed(2)}Cr';
-                            if (margin >= 1e5)
+                            }
+                            if (margin >= 1e5) {
                               return '₹${(margin / 1e5).toStringAsFixed(2)}L';
-                            if (margin >= 1e3)
+                            }
+                            if (margin >= 1e3) {
                               return '₹${(margin / 1e3).toStringAsFixed(1)}K';
+                            }
                             return '₹${margin.toStringAsFixed(2)}';
                           }(),
                           style: theme.textTheme.titleMedium?.copyWith(

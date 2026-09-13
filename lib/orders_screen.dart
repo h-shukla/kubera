@@ -54,6 +54,8 @@ class Order {
   final double limitPrice;
   final double exitLimitPrice;
   final int exitLimitQty;
+  final double stopLossPrice;
+  final int stopLossQty;
   // Tradebook enrichment
   final double? realisedPnl;
   final double? exitPrice;
@@ -75,6 +77,8 @@ class Order {
     required this.limitPrice,
     this.exitLimitPrice = 0.0,
     this.exitLimitQty = 0,
+    this.stopLossPrice = 0.0,
+    this.stopLossQty = 0,
     this.realisedPnl,
     this.exitPrice,
     this.leg = '',
@@ -96,6 +100,8 @@ class Order {
     limitPrice: limitPrice,
     exitLimitPrice: exitLimitPrice,
     exitLimitQty: exitLimitQty,
+    stopLossPrice: stopLossPrice,
+    stopLossQty: stopLossQty,
     realisedPnl: realisedPnl,
     exitPrice: exitPrice,
     leg: leg,
@@ -117,12 +123,15 @@ class Order {
     limitPrice: limitPrice,
     exitLimitPrice: exitLimitPrice,
     exitLimitQty: exitLimitQty,
+    stopLossPrice: stopLossPrice,
+    stopLossQty: stopLossQty,
     realisedPnl: realisedPnl ?? this.realisedPnl,
     exitPrice: exitPrice ?? this.exitPrice,
     leg: leg,
   );
 
   bool get hasLimitExit => exitLimitPrice > 0;
+  bool get hasStopLoss => stopLossPrice > 0;
 
   String get bestToken {
     if (contractName.isNotEmpty && contractName != 'UNKNOWN') {
@@ -179,6 +188,9 @@ class Order {
     final exitLimitPrice =
         (json['exit_limit_price'] as num?)?.toDouble() ?? 0.0;
     final exitLimitQty = (json['exit_limit_qty'] as num?)?.toInt() ?? 0;
+    final stopLossPrice =
+        (json['stop_loss_price'] as num?)?.toDouble() ?? 0.0;
+    final stopLossQty = (json['stop_loss_qty'] as num?)?.toInt() ?? 0;
 
     return Order(
       orderId: json['order_id'] as String? ?? '',
@@ -196,6 +208,8 @@ class Order {
       limitPrice: limitPrice,
       exitLimitPrice: exitLimitPrice,
       exitLimitQty: exitLimitQty,
+      stopLossPrice: stopLossPrice,
+      stopLossQty: stopLossQty,
     );
   }
 
@@ -694,6 +708,65 @@ class OrdersRepository {
     }
   }
 
+  /// Registers a new stop-loss through the close endpoint. The backend uses
+  /// `qty` here because this call creates the automatic close instruction.
+  Future<void> setStopLossPrice(
+    String orderId, {
+    required double stopLossPrice,
+    int? stopLossQty,
+  }) async {
+    final uri = Uri.parse('$_baseUrl/orders/$orderId/close');
+    final body = <String, dynamic>{'stop_loss_price': stopLossPrice};
+    if (stopLossQty != null) body['qty'] = stopLossQty;
+
+    final response = await http
+        .patch(
+          uri,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 15));
+
+    if (response.statusCode != 200 && response.statusCode != 204) {
+      String detail =
+          'Failed to set stop-loss (HTTP ${response.statusCode})';
+      try {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['detail'] != null) detail = body['detail'].toString();
+      } catch (_) {}
+      throw Exception(detail);
+    }
+  }
+
+  /// Modifies or clears an existing stop-loss through the modify endpoint.
+  Future<void> modifyStopLoss(
+    String orderId, {
+    required double stopLossPrice,
+    int? stopLossQty,
+  }) async {
+    final uri = Uri.parse('$_baseUrl/orders/$orderId/modify');
+    final body = <String, dynamic>{'stop_loss_price': stopLossPrice};
+    if (stopLossQty != null) body['stop_loss_qty'] = stopLossQty;
+
+    final response = await http
+        .patch(
+          uri,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 15));
+
+    if (response.statusCode != 200 && response.statusCode != 204) {
+      String detail =
+          'Failed to modify stop-loss (HTTP ${response.statusCode})';
+      try {
+        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        if (body['detail'] != null) detail = body['detail'].toString();
+      } catch (_) {}
+      throw Exception(detail);
+    }
+  }
+
   Future<void> modifyOrder(String orderId, {required double limitPrice}) async {
     final uri = Uri.parse('$_baseUrl/orders/$orderId/modify');
     final response = await http
@@ -853,6 +926,7 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
   bool _isClosing = false;
   bool _isCancelling = false;
   bool _isSettingLimitExit = false;
+  bool _isSettingStopLoss = false;
   late double _currentPrice;
   late int _exitLots;
   ContractInfo? _contractInfo;
@@ -862,8 +936,11 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
 
   late double _exitLimitPrice;
   late int _exitLimitQty;
+  late double _stopLossPrice;
+  late int _stopLossQty;
 
   TextEditingController? _limitExitPriceController;
+  TextEditingController? _stopLossPriceController;
   TextEditingController? _modifyPriceController;
 
   @override
@@ -873,6 +950,8 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
     _exitLots = 1;
     _exitLimitPrice = widget.order.exitLimitPrice;
     _exitLimitQty = widget.order.exitLimitQty;
+    _stopLossPrice = widget.order.stopLossPrice;
+    _stopLossQty = widget.order.stopLossQty;
 
     _ltpSub = widget.ltpStream?.listen((ltpMap) {
       final order = widget.order;
@@ -932,6 +1011,7 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
   void dispose() {
     _ltpSub?.cancel();
     _limitExitPriceController?.dispose();
+    _stopLossPriceController?.dispose();
     _modifyPriceController?.dispose();
     super.dispose();
   }
@@ -1672,6 +1752,382 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
     }
   }
 
+  Future<void> _showStopLossDialog() async {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final order = widget.order;
+    final isBuy = order.action == 'Buy';
+    final suggestedPrice = _stopLossPrice > 0
+        ? _stopLossPrice
+        : _currentPrice > 0
+        ? _currentPrice
+        : order.price;
+
+    _stopLossPriceController?.dispose();
+    _stopLossPriceController = TextEditingController(
+      text: suggestedPrice > 0 ? suggestedPrice.toStringAsFixed(2) : '',
+    );
+    final priceController = _stopLossPriceController!;
+    final qtyController = TextEditingController(
+      text: (_stopLossQty > 0 ? _stopLossQty : order.quantity).toString(),
+    );
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (dialogContext) => Dialog(
+        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: SingleChildScrollView(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(dialogContext).viewInsets.bottom,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _stopLossPrice > 0
+                            ? 'Update stop-loss'
+                            : 'Set stop-loss',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w700,
+                          color: isDark ? Colors.white : Colors.black,
+                        ),
+                      ),
+                    ),
+                    if (_stopLossPrice > 0)
+                      GestureDetector(
+                        onTap: () => Navigator.pop(dialogContext, {
+                          'action': 'clear',
+                        }),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isDark
+                                ? Colors.white10
+                                : Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            'Clear',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: isDark
+                                  ? Colors.grey.shade400
+                                  : Colors.grey.shade600,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${order.symbol}  ·  ${order.action}  ·  ${order.quantity} qty',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  'Stop-loss price',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: priceController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  autofocus: true,
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.white : Colors.black,
+                  ),
+                  decoration: InputDecoration(
+                    prefixText: '₹  ',
+                    prefixStyle: TextStyle(
+                      fontSize: 18,
+                      color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                    ),
+                    suffixText: _currentPrice > 0
+                        ? 'LTP ₹${_currentPrice.toStringAsFixed(2)}'
+                        : null,
+                    suffixStyle: TextStyle(
+                      fontSize: 12,
+                      color: isDark ? Colors.grey.shade500 : Colors.grey.shade600,
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(
+                        color: isDark ? Colors.white24 : Colors.grey.shade300,
+                      ),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(
+                        color: Color(0xFFD32F2F),
+                        width: 2,
+                      ),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 14,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline_rounded,
+                      size: 13,
+                      color: Colors.grey.shade500,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      isBuy
+                          ? 'Exits when LTP ≤ stop-loss'
+                          : 'Exits when LTP ≥ stop-loss',
+                      style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Exit quantity',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.grey.shade400 : Colors.grey.shade600,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: qtyController,
+                  keyboardType: TextInputType.number,
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.white : Colors.black,
+                  ),
+                  decoration: InputDecoration(
+                    suffixText: 'of ${order.quantity}',
+                    suffixStyle: TextStyle(
+                      fontSize: 12,
+                      color: isDark ? Colors.grey.shade500 : Colors.grey.shade600,
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide(
+                        color: isDark ? Colors.white24 : Colors.grey.shade300,
+                      ),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(
+                        color: Color(0xFFD32F2F),
+                        width: 2,
+                      ),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 14,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(dialogContext, {
+                          'action': 'cancel',
+                        }),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          side: BorderSide(
+                            color: isDark ? Colors.white24 : Colors.grey.shade300,
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        child: Text(
+                          'Cancel',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: isDark ? Colors.white70 : Colors.black87,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.pop(dialogContext, {
+                          'action': 'set',
+                          'price': priceController.text.trim(),
+                          'qty': qtyController.text.trim(),
+                        }),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFD32F2F),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          elevation: 0,
+                        ),
+                        child: Text(
+                          _stopLossPrice > 0 ? 'Update' : 'Set stop-loss',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    qtyController.dispose();
+
+    if (result == null || !mounted) return;
+    final action = result['action'] as String?;
+    if (action == 'clear') {
+      await _clearStopLoss();
+      return;
+    }
+    if (action != 'set') return;
+
+    final newPrice = double.tryParse(result['price'] as String? ?? '');
+    final newQty = int.tryParse(result['qty'] as String? ?? '');
+    if (newPrice == null || newPrice <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please enter a valid stop-loss price'),
+          backgroundColor: Color(0xFFD32F2F),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    if (newQty == null || newQty < 1 || newQty > order.quantity) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Enter a quantity between 1 and ${order.quantity}'),
+          backgroundColor: const Color(0xFFD32F2F),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    await _applyStopLoss(newPrice, newQty);
+  }
+
+  Future<void> _applyStopLoss(double price, int qty) async {
+    setState(() => _isSettingStopLoss = true);
+    try {
+      if (_stopLossPrice > 0) {
+        await _repo.modifyStopLoss(
+          widget.order.orderId,
+          stopLossPrice: price,
+          stopLossQty: qty,
+        );
+      } else {
+        await _repo.setStopLossPrice(
+          widget.order.orderId,
+          stopLossPrice: price,
+          stopLossQty: qty,
+        );
+      }
+      if (!mounted) return;
+      setState(() {
+        _stopLossPrice = price;
+        _stopLossQty = qty;
+        _isSettingStopLoss = false;
+      });
+      widget.onClosed?.call();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Stop-loss set at ₹${price.toStringAsFixed(2)} for ${widget.order.symbol}',
+          ),
+          backgroundColor: Theme.of(context).brightness == Brightness.dark
+              ? Colors.grey.shade800
+              : Colors.black87,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSettingStopLoss = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to set stop-loss: $e'),
+          backgroundColor: const Color(0xFFD32F2F),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _clearStopLoss() async {
+    setState(() => _isSettingStopLoss = true);
+    try {
+      await _repo.modifyStopLoss(widget.order.orderId, stopLossPrice: 0);
+      if (!mounted) return;
+      setState(() {
+        _stopLossPrice = 0;
+        _stopLossQty = 0;
+        _isSettingStopLoss = false;
+      });
+      widget.onClosed?.call();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Stop-loss cleared for ${widget.order.symbol}'),
+          backgroundColor: Theme.of(context).brightness == Brightness.dark
+              ? Colors.grey.shade800
+              : Colors.black87,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSettingStopLoss = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to clear stop-loss: $e'),
+          backgroundColor: const Color(0xFFD32F2F),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   Future<void> _showModifyDialog() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
@@ -2256,6 +2712,63 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
               ),
               const SizedBox(height: 12),
             ],
+            if (_stopLossPrice > 0) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                decoration: BoxDecoration(
+                  color: isDark
+                      ? const Color(0xFFB71C1C).withValues(alpha: 0.2)
+                      : const Color(0xFFFFEBEE),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.shield_rounded,
+                      size: 16,
+                      color: isDark
+                          ? const Color(0xFFE57373)
+                          : const Color(0xFFC62828),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Stop-loss active · ₹${_stopLossPrice.toStringAsFixed(2)}',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: isDark
+                                  ? const Color(0xFFE57373)
+                                  : const Color(0xFFC62828),
+                            ),
+                          ),
+                          if (_stopLossQty > 0) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              'Qty: $_stopLossQty  ·  ${isBuy ? 'Triggers when LTP ≤ ₹${_stopLossPrice.toStringAsFixed(2)}' : 'Triggers when LTP ≥ ₹${_stopLossPrice.toStringAsFixed(2)}'}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isDark
+                                    ? const Color(0xFFE57373).withValues(alpha: 0.7)
+                                    : const Color(0xFFC62828),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
           ],
 
           if (_contractLoading &&
@@ -2308,39 +2821,78 @@ class _OrderDetailSheetState extends State<_OrderDetailSheet> {
                 ),
               )
             else
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: _showLimitExitDialog,
-                  icon: Icon(
-                    _exitLimitPrice > 0
-                        ? Icons.flag_rounded
-                        : Icons.flag_outlined,
-                    size: 16,
-                    color: _exitLimitPrice > 0
-                        ? const Color(0xFF388E3C)
-                        : (isDark ? Colors.white70 : Colors.black87),
-                  ),
-                  label: Text(
-                    _exitLimitPrice > 0
-                        ? 'Edit target · ₹${_exitLimitPrice.toStringAsFixed(2)}'
-                        : 'Set limit exit',
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    foregroundColor: _exitLimitPrice > 0
-                        ? const Color(0xFF388E3C)
-                        : (isDark ? Colors.white70 : Colors.black87),
-                    side: BorderSide(
-                      color: _exitLimitPrice > 0
-                          ? const Color(0xFF388E3C)
-                          : (isDark ? Colors.white24 : Colors.grey.shade300),
+              Column(
+                children: [
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _showLimitExitDialog,
+                      icon: Icon(
+                        _exitLimitPrice > 0
+                            ? Icons.flag_rounded
+                            : Icons.flag_outlined,
+                        size: 16,
+                        color: _exitLimitPrice > 0
+                            ? const Color(0xFF388E3C)
+                            : (isDark ? Colors.white70 : Colors.black87),
+                      ),
+                      label: Text(
+                        _exitLimitPrice > 0
+                            ? 'Edit target · ₹${_exitLimitPrice.toStringAsFixed(2)}'
+                            : 'Set limit exit',
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        foregroundColor: _exitLimitPrice > 0
+                            ? const Color(0xFF388E3C)
+                            : (isDark ? Colors.white70 : Colors.black87),
+                        side: BorderSide(
+                          color: _exitLimitPrice > 0
+                              ? const Color(0xFF388E3C)
+                              : (isDark ? Colors.white24 : Colors.grey.shade300),
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
                     ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _isSettingStopLoss ? null : _showStopLossDialog,
+                      icon: Icon(
+                        _stopLossPrice > 0
+                            ? Icons.shield_rounded
+                            : Icons.shield_outlined,
+                        size: 16,
+                        color: _stopLossPrice > 0
+                            ? const Color(0xFFC62828)
+                            : (isDark ? Colors.white70 : Colors.black87),
+                      ),
+                      label: Text(
+                        _stopLossPrice > 0
+                            ? 'Edit stop-loss · ₹${_stopLossPrice.toStringAsFixed(2)}'
+                            : 'Set stop-loss',
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        foregroundColor: _stopLossPrice > 0
+                            ? const Color(0xFFC62828)
+                            : (isDark ? Colors.white70 : Colors.black87),
+                        side: BorderSide(
+                          color: _stopLossPrice > 0
+                              ? const Color(0xFFC62828)
+                              : (isDark ? Colors.white24 : Colors.grey.shade300),
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
                     ),
                   ),
-                ),
+                ],
               ),
             const SizedBox(height: 12),
             SizedBox(
@@ -3491,14 +4043,20 @@ class _OrderTile extends StatelessWidget {
                         ),
                       ),
                       if (order.status == OrderStatus.open &&
-                          order.hasLimitExit) ...[
+                          (order.hasLimitExit || order.hasStopLoss)) ...[
                         const SizedBox(width: 6),
                         Icon(
-                          Icons.flag_rounded,
+                          order.hasStopLoss && !order.hasLimitExit
+                              ? Icons.shield_rounded
+                              : Icons.flag_rounded,
                           size: 13,
-                          color: isDark
-                              ? const Color(0xFF81C784)
-                              : const Color(0xFF2E7D32),
+                          color: order.hasStopLoss && !order.hasLimitExit
+                              ? (isDark
+                                    ? const Color(0xFFE57373)
+                                    : const Color(0xFFC62828))
+                              : (isDark
+                                    ? const Color(0xFF81C784)
+                                    : const Color(0xFF2E7D32)),
                         ),
                       ],
                     ],

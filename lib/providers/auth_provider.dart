@@ -157,10 +157,12 @@ class AuthNotifier extends AsyncNotifier<AuthStatus> {
     username = data['username'] as String?;
     email = data['email'] as String?;
 
-    if (accessToken != null)
+    if (accessToken != null) {
       await _prefs.setString(_kAccessTokenKey, accessToken!);
-    if (refreshToken != null)
+    }
+    if (refreshToken != null) {
       await _prefs.setString(_kRefreshTokenKey, refreshToken!);
+    }
     if (userId != null) await _prefs.setString(_kUserIdKey, userId!);
     if (username != null) await _prefs.setString(_kUsernameKey, username!);
     if (email != null) await _prefs.setString(_kEmailKey, email!);

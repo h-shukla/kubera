@@ -197,10 +197,12 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                 validator: (v) {
                   if (v == null || v.isEmpty) return null; // optional
                   if (v.length < 8) return 'Min 8 characters';
-                  if (!v.contains(RegExp(r'[A-Z]')))
+                  if (!v.contains(RegExp(r'[A-Z]'))) {
                     return 'Need at least 1 uppercase';
-                  if (!v.contains(RegExp(r'[0-9]')))
+                  }
+                  if (!v.contains(RegExp(r'[0-9]'))) {
                     return 'Need at least 1 digit';
+                  }
                   return null;
                 },
               ),
@@ -223,7 +225,7 @@ class _EditProfileScreenState extends ConsumerState<EditProfileScreen> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: cs.primary,
                     foregroundColor: Colors.white,
-                    disabledBackgroundColor: cs.primary.withOpacity(0.5),
+                    disabledBackgroundColor: cs.primary.withValues(alpha: 0.5),
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(8),
